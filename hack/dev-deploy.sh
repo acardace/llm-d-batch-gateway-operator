@@ -19,6 +19,9 @@ APISERVER_IMG="${APISERVER_IMG:-ghcr.io/llm-d-incubation/batch-gateway-apiserver
 PROCESSOR_IMG="${PROCESSOR_IMG:-ghcr.io/llm-d-incubation/batch-gateway-processor:latest}"
 GC_IMG="${GC_IMG:-ghcr.io/llm-d-incubation/batch-gateway-gc:latest}"
 VLLM_SIM_IMG="${VLLM_SIM_IMG:-ghcr.io/llm-d/llm-d-inference-sim:latest}"
+ASYNC_PROCESSOR_IMG="${ASYNC_PROCESSOR_IMG:-ghcr.io/llm-d-incubation/llm-d-async:v0.7.0-RC3}"
+# Set to "true" to deploy the async processor component alongside the batch gateway.
+DEPLOY_ASYNC_PROCESSOR="${DEPLOY_ASYNC_PROCESSOR:-false}"
 
 # Port configuration (matches batch-gateway defaults)
 APISERVER_NODE_PORT="${APISERVER_NODE_PORT:-30080}"
@@ -338,6 +341,12 @@ apply_cr() {
 
     kubectl apply -f config/samples/dev.yaml -n "${NAMESPACE}"
 
+    if [ "${DEPLOY_ASYNC_PROCESSOR}" = "true" ]; then
+        log "Patching CR to enable async processor (image: ${ASYNC_PROCESSOR_IMG})..."
+        kubectl patch llmbatchgateway batch-gateway -n "${NAMESPACE}" --type merge -p \
+            "{\"spec\":{\"asyncProcessor\":{\"image\":\"${ASYNC_PROCESSOR_IMG}\",\"concurrency\":8,\"requestTimeout\":\"5m\",\"pollIntervalMs\":1000,\"batchSize\":10}}}"
+    fi
+
     log "CR applied. Operator will reconcile and create batch-gateway components."
 }
 
@@ -403,14 +412,17 @@ wait_for_batch_gateway() {
             -l "app.kubernetes.io/instance=batch-gateway" \
             -o jsonpath='{range .items[*]}{.status.readyReplicas}{"\n"}{end}' 2>/dev/null | grep -c "^[1-9]" || true)
 
-        if [ "$ready" -ge 3 ]; then
+        local expected=3
+        [ "${DEPLOY_ASYNC_PROCESSOR}" = "true" ] && expected=4
+
+        if [ "$ready" -ge "$expected" ]; then
             log "All batch-gateway components are ready."
             return
         fi
 
         sleep 5
         elapsed=$((elapsed + 5))
-        log "Waiting... ($elapsed/${timeout}s, $ready/3 deployments ready)"
+        log "Waiting... ($elapsed/${timeout}s, $ready/$expected deployments ready)"
     done
 
     warn "Timed out waiting for batch-gateway components. Showing current state:"
@@ -433,6 +445,9 @@ print_status() {
     echo "    API Server:  http://localhost:${LOCAL_PORT}"
     echo "    Observability: http://localhost:${LOCAL_OBS_PORT}"
     echo "    Processor:   http://localhost:${LOCAL_PROCESSOR_PORT}"
+    if [ "${DEPLOY_ASYNC_PROCESSOR}" = "true" ]; then
+        echo "    Async Processor: enabled (image: ${ASYNC_PROCESSOR_IMG})"
+    fi
     echo ""
     echo "  Cleanup:"
     echo "    make dev-clean        # remove operator + deps"

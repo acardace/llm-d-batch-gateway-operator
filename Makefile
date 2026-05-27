@@ -91,10 +91,12 @@ undeploy:
 ## Dev (Kind)
 
 KIND_CLUSTER_NAME ?= batch-gateway-dev
+DEPLOY_ASYNC_PROCESSOR ?= false
+ASYNC_PROCESSOR_IMG ?= ghcr.io/llm-d-incubation/llm-d-async-processor:latest
 
 .PHONY: dev-deploy
-dev-deploy:
-	hack/dev-deploy.sh
+dev-deploy: ## Deploy dev environment. Set DEPLOY_ASYNC_PROCESSOR=true to include the async processor.
+	DEPLOY_ASYNC_PROCESSOR=$(DEPLOY_ASYNC_PROCESSOR) ASYNC_PROCESSOR_IMG=$(ASYNC_PROCESSOR_IMG) hack/dev-deploy.sh
 
 .PHONY: dev-clean
 dev-clean:
