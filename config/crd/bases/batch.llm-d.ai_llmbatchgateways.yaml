@@ -29,6 +29,9 @@ spec:
     - jsonPath: .status.componentStatus.gc.readyReplicas
       name: GC-Ready
       type: integer
+    - jsonPath: .status.componentStatus.asyncProcessor.readyReplicas
+      name: AsyncProc-Ready
+      type: integer
     - jsonPath: .metadata.creationTimestamp
       name: Age
       type: date
@@ -162,6 +165,185 @@ spec:
                   resources:
                     description: Resources defines CPU and memory requests/limits
                       for the API server container.
+                    properties:
+                      claims:
+                        description: |-
+                          Claims lists the names of resources, defined in spec.resourceClaims,
+                          that are used by this container.
+
+                          This field depends on the
+                          DynamicResourceAllocation feature gate.
+
+                          This field is immutable. It can only be set for containers.
+                        items:
+                          description: ResourceClaim references one entry in PodSpec.ResourceClaims.
+                          properties:
+                            name:
+                              description: |-
+                                Name must match the name of one entry in pod.spec.resourceClaims of
+                                the Pod where this field is used. It makes that resource available
+                                inside a container.
+                              type: string
+                            request:
+                              description: |-
+                                Request is the name chosen for a request in the referenced claim.
+                                If empty, everything from the claim is made available, otherwise
+                                only the result of this request.
+                              type: string
+                          required:
+                          - name
+                          type: object
+                        type: array
+                        x-kubernetes-list-map-keys:
+                        - name
+                        x-kubernetes-list-type: map
+                      limits:
+                        additionalProperties:
+                          anyOf:
+                          - type: integer
+                          - type: string
+                          pattern: ^(\+|-)?(([0-9]+(\.[0-9]*)?)|(\.[0-9]+))(([KMGTPE]i)|[numkMGTPE]|([eE](\+|-)?(([0-9]+(\.[0-9]*)?)|(\.[0-9]+))))?$
+                          x-kubernetes-int-or-string: true
+                        description: |-
+                          Limits describes the maximum amount of compute resources allowed.
+                          More info: https://kubernetes.io/docs/concepts/configuration/manage-resources-containers/
+                        type: object
+                      requests:
+                        additionalProperties:
+                          anyOf:
+                          - type: integer
+                          - type: string
+                          pattern: ^(\+|-)?(([0-9]+(\.[0-9]*)?)|(\.[0-9]+))(([KMGTPE]i)|[numkMGTPE]|([eE](\+|-)?(([0-9]+(\.[0-9]*)?)|(\.[0-9]+))))?$
+                          x-kubernetes-int-or-string: true
+                        description: |-
+                          Requests describes the minimum amount of compute resources required.
+                          If Requests is omitted for a container, it defaults to Limits if that is explicitly specified,
+                          otherwise to an implementation-defined value. Requests cannot exceed Limits.
+                          More info: https://kubernetes.io/docs/concepts/configuration/manage-resources-containers/
+                        type: object
+                    type: object
+                required:
+                - image
+                type: object
+              asyncProcessor:
+                description: |-
+                  AsyncProcessor optionally enables the async processor (batch dispatcher) component.
+                  When nil, the async processor is not deployed.
+                properties:
+                  batchSize:
+                    default: 10
+                    description: BatchSize is the number of messages to dequeue per
+                      poll cycle.
+                    format: int32
+                    minimum: 1
+                    type: integer
+                  concurrency:
+                    default: 8
+                    description: Concurrency is the number of concurrent dispatch
+                      workers.
+                    format: int32
+                    minimum: 1
+                    type: integer
+                  image:
+                    description: Image is the container image for the async processor.
+                    maxLength: 1024
+                    type: string
+                  pollIntervalMs:
+                    default: 1000
+                    description: PollIntervalMs is the Redis sorted set poll interval
+                      in milliseconds.
+                    format: int32
+                    minimum: 100
+                    type: integer
+                  prometheus:
+                    description: Prometheus configures the Prometheus server for metric-based
+                      dispatch gates.
+                    properties:
+                      cacheTTL:
+                        default: 5s
+                        description: CacheTTL is the TTL for cached Prometheus query
+                          results (e.g. "5s").
+                        maxLength: 32
+                        pattern: ^([0-9]+(\.[0-9]+)?(ms|s|m|h))+$
+                        type: string
+                      url:
+                        description: URL is the Prometheus server base URL (e.g. "http://prometheus.monitoring.svc:9090").
+                        maxLength: 2048
+                        type: string
+                    required:
+                    - url
+                    type: object
+                  queues:
+                    additionalProperties:
+                      description: AsyncProcessorQueueSpec configures a single dispatch
+                        queue.
+                      properties:
+                        gateParams:
+                          additionalProperties:
+                            type: string
+                          description: GateParams are key-value parameters passed
+                            to the dispatch gate.
+                          type: object
+                        gateType:
+                          description: |-
+                            GateType is the dispatch gate type (e.g. "constant", "redis",
+                            "prometheus-saturation", "prometheus-budget").
+                          maxLength: 253
+                          type: string
+                        inferenceGatewayURL:
+                          description: InferenceGatewayURL is the base URL of the
+                            inference gateway for this queue.
+                          maxLength: 2048
+                          type: string
+                        inferenceObjective:
+                          description: InferenceObjective is the value of the inference-objective
+                            header.
+                          maxLength: 253
+                          type: string
+                        queueName:
+                          default: request-sortedset
+                          description: QueueName is the Redis sorted set name for
+                            incoming requests.
+                          maxLength: 253
+                          type: string
+                        requestPathURL:
+                          default: /v1/completions
+                          description: RequestPathURL is the HTTP path for inference
+                            requests.
+                          maxLength: 2048
+                          type: string
+                        resultQueueName:
+                          default: result-list
+                          description: ResultQueueName is the Redis list name for
+                            completed results.
+                          maxLength: 253
+                          type: string
+                      required:
+                      - inferenceGatewayURL
+                      type: object
+                    description: |-
+                      Queues defines per-queue configuration for multi-queue mode.
+                      Each key is a unique queue ID.
+                      When omitted, a single default queue is configured using
+                      spec.processor.globalInferenceGateway.
+                    type: object
+                  replicas:
+                    default: 1
+                    description: Replicas is the desired number of async processor
+                      pods.
+                    format: int32
+                    minimum: 0
+                    type: integer
+                  requestTimeout:
+                    default: 5m
+                    description: RequestTimeout is the maximum time to wait for a
+                      single inference response (e.g. "5m").
+                    maxLength: 32
+                    pattern: ^([0-9]+(\.[0-9]+)?(ms|s|m|h))+$
+                    type: string
+                  resources:
+                    description: Resources defines CPU and memory requests/limits
+                      for the async processor container.
                     properties:
                       claims:
                         description: |-
@@ -783,6 +965,10 @@ spec:
             x-kubernetes-validations:
             - message: spec.secretRef.name is required
               rule: size(self.secretRef.name) > 0
+            - message: spec.processor.globalInferenceGateway is required when asyncProcessor
+                is enabled without explicit queues
+              rule: '!has(self.asyncProcessor) || size(self.asyncProcessor.queues)
+                > 0 || has(self.processor.globalInferenceGateway)'
           status:
             description: Status defines the observed state of LLMBatchGateway.
             properties:
@@ -793,6 +979,24 @@ spec:
                   apiServer:
                     description: APIServer reports the replica status of the API server
                       Deployment.
+                    properties:
+                      readyReplicas:
+                        description: ReadyReplicas is the number of pods that have
+                          passed their readiness checks.
+                        format: int32
+                        type: integer
+                      replicas:
+                        description: Replicas is the total number of non-terminated
+                          pods.
+                        format: int32
+                        type: integer
+                    required:
+                    - readyReplicas
+                    - replicas
+                    type: object
+                  asyncProcessor:
+                    description: AsyncProcessor reports the replica status of the
+                      async processor Deployment.
                     properties:
                       readyReplicas:
                         description: ReadyReplicas is the number of pods that have
@@ -848,7 +1052,7 @@ spec:
               conditions:
                 description: |-
                   Conditions represent the latest available observations of the LLMBatchGateway's state.
-                  Known condition types: Ready, APIServerAvailable, ProcessorAvailable, GCAvailable.
+                  Known condition types: Ready, APIServerAvailable, ProcessorAvailable, GCAvailable, AsyncProcessorAvailable.
                 items:
                   description: Condition contains details for one aspect of the current
                     state of this API Resource.

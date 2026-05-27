@@ -16,6 +16,7 @@ import (
 // +kubebuilder:printcolumn:name="API-Ready",type="integer",JSONPath=`.status.componentStatus.apiServer.readyReplicas`
 // +kubebuilder:printcolumn:name="Proc-Ready",type="integer",JSONPath=`.status.componentStatus.processor.readyReplicas`
 // +kubebuilder:printcolumn:name="GC-Ready",type="integer",JSONPath=`.status.componentStatus.gc.readyReplicas`
+// +kubebuilder:printcolumn:name="AsyncProc-Ready",type="integer",JSONPath=`.status.componentStatus.asyncProcessor.readyReplicas`
 // +kubebuilder:printcolumn:name="Age",type="date",JSONPath=".metadata.creationTimestamp"
 type LLMBatchGateway struct {
 	metav1.TypeMeta   `json:",inline"`
@@ -39,6 +40,7 @@ type LLMBatchGatewayList struct {
 
 // LLMBatchGatewaySpec defines the desired state of the batch gateway deployment.
 // +kubebuilder:validation:XValidation:rule="size(self.secretRef.name) > 0",message="spec.secretRef.name is required"
+// +kubebuilder:validation:XValidation:rule="!has(self.asyncProcessor) || size(self.asyncProcessor.queues) > 0 || has(self.processor.globalInferenceGateway)",message="spec.processor.globalInferenceGateway is required when asyncProcessor is enabled without explicit queues"
 type LLMBatchGatewaySpec struct {
 	// SecretRef references the Kubernetes Secret that holds runtime credentials
 	// (database URL, S3 keys, inference API key, etc.).
@@ -95,6 +97,10 @@ type LLMBatchGatewaySpec struct {
 
 	// PrometheusRule configures a PrometheusRule resource with pre-built alerting rules.
 	PrometheusRule *PrometheusRuleSpec `json:"prometheusRule,omitempty"`
+
+	// AsyncProcessor optionally enables the async processor (batch dispatcher) component.
+	// When nil, the async processor is not deployed.
+	AsyncProcessor *AsyncProcessorSpec `json:"asyncProcessor,omitempty"`
 }
 
 // --- File Storage ---
@@ -502,6 +508,103 @@ type ParentReference struct {
 	SectionName string `json:"sectionName,omitempty"`
 }
 
+// --- Async Processor ---
+
+// AsyncProcessorSpec configures the async processor (batch dispatcher) component.
+type AsyncProcessorSpec struct {
+	// Image is the container image for the async processor.
+	// +kubebuilder:validation:Required
+	// +kubebuilder:validation:MaxLength=1024
+	Image string `json:"image"`
+
+	// Replicas is the desired number of async processor pods.
+	// +kubebuilder:default=1
+	// +kubebuilder:validation:Minimum=0
+	Replicas *int32 `json:"replicas,omitempty"`
+
+	// Resources defines CPU and memory requests/limits for the async processor container.
+	Resources *corev1.ResourceRequirements `json:"resources,omitempty"`
+
+	// Concurrency is the number of concurrent dispatch workers.
+	// +kubebuilder:default=8
+	// +kubebuilder:validation:Minimum=1
+	Concurrency int32 `json:"concurrency,omitempty"`
+
+	// RequestTimeout is the maximum time to wait for a single inference response (e.g. "5m").
+	// +kubebuilder:default="5m"
+	// +kubebuilder:validation:Pattern=`^([0-9]+(\.[0-9]+)?(ms|s|m|h))+$`
+	// +kubebuilder:validation:MaxLength=32
+	RequestTimeout string `json:"requestTimeout,omitempty"`
+
+	// PollIntervalMs is the Redis sorted set poll interval in milliseconds.
+	// +kubebuilder:default=1000
+	// +kubebuilder:validation:Minimum=100
+	PollIntervalMs int32 `json:"pollIntervalMs,omitempty"`
+
+	// BatchSize is the number of messages to dequeue per poll cycle.
+	// +kubebuilder:default=10
+	// +kubebuilder:validation:Minimum=1
+	BatchSize int32 `json:"batchSize,omitempty"`
+
+	// Prometheus configures the Prometheus server for metric-based dispatch gates.
+	Prometheus *AsyncProcessorPrometheusSpec `json:"prometheus,omitempty"`
+
+	// Queues defines per-queue configuration for multi-queue mode.
+	// Each key is a unique queue ID.
+	// When omitted, a single default queue is configured using
+	// spec.processor.globalInferenceGateway.
+	Queues map[string]AsyncProcessorQueueSpec `json:"queues,omitempty"`
+}
+
+// AsyncProcessorPrometheusSpec configures a Prometheus server connection.
+type AsyncProcessorPrometheusSpec struct {
+	// URL is the Prometheus server base URL (e.g. "http://prometheus.monitoring.svc:9090").
+	// +kubebuilder:validation:Required
+	// +kubebuilder:validation:MaxLength=2048
+	URL string `json:"url"`
+
+	// CacheTTL is the TTL for cached Prometheus query results (e.g. "5s").
+	// +kubebuilder:default="5s"
+	// +kubebuilder:validation:Pattern=`^([0-9]+(\.[0-9]+)?(ms|s|m|h))+$`
+	// +kubebuilder:validation:MaxLength=32
+	CacheTTL string `json:"cacheTTL,omitempty"`
+}
+
+// AsyncProcessorQueueSpec configures a single dispatch queue.
+type AsyncProcessorQueueSpec struct {
+	// InferenceGatewayURL is the base URL of the inference gateway for this queue.
+	// +kubebuilder:validation:Required
+	// +kubebuilder:validation:MaxLength=2048
+	InferenceGatewayURL string `json:"inferenceGatewayURL"`
+
+	// RequestPathURL is the HTTP path for inference requests.
+	// +kubebuilder:default="/v1/completions"
+	// +kubebuilder:validation:MaxLength=2048
+	RequestPathURL string `json:"requestPathURL,omitempty"`
+
+	// InferenceObjective is the value of the inference-objective header.
+	// +kubebuilder:validation:MaxLength=253
+	InferenceObjective string `json:"inferenceObjective,omitempty"`
+
+	// QueueName is the Redis sorted set name for incoming requests.
+	// +kubebuilder:default="request-sortedset"
+	// +kubebuilder:validation:MaxLength=253
+	QueueName string `json:"queueName,omitempty"`
+
+	// ResultQueueName is the Redis list name for completed results.
+	// +kubebuilder:default="result-list"
+	// +kubebuilder:validation:MaxLength=253
+	ResultQueueName string `json:"resultQueueName,omitempty"`
+
+	// GateType is the dispatch gate type (e.g. "constant", "redis",
+	// "prometheus-saturation", "prometheus-budget").
+	// +kubebuilder:validation:MaxLength=253
+	GateType string `json:"gateType,omitempty"`
+
+	// GateParams are key-value parameters passed to the dispatch gate.
+	GateParams map[string]string `json:"gateParams,omitempty"`
+}
+
 // --- Status ---
 
 // LLMBatchGatewayStatus defines the observed state of LLMBatchGateway.
@@ -510,7 +613,7 @@ type LLMBatchGatewayStatus struct {
 	ObservedGeneration int64 `json:"observedGeneration,omitempty"`
 
 	// Conditions represent the latest available observations of the LLMBatchGateway's state.
-	// Known condition types: Ready, APIServerAvailable, ProcessorAvailable, GCAvailable.
+	// Known condition types: Ready, APIServerAvailable, ProcessorAvailable, GCAvailable, AsyncProcessorAvailable.
 	Conditions []metav1.Condition `json:"conditions,omitempty"`
 
 	// ComponentStatus reports the replica counts for each managed component.
@@ -527,6 +630,9 @@ type ComponentStatus struct {
 
 	// GC reports the replica status of the garbage-collector Deployment.
 	GC *ComponentReplicaStatus `json:"gc,omitempty"`
+
+	// AsyncProcessor reports the replica status of the async processor Deployment.
+	AsyncProcessor *ComponentReplicaStatus `json:"asyncProcessor,omitempty"`
 }
 
 // ComponentReplicaStatus reports the desired and ready replica counts for a Deployment.
