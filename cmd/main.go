@@ -23,6 +23,9 @@ import (
 // It defaults to "dev" when built without the flag (e.g. go run).
 var version = "dev"
 
+// defaultAsyncProcessorImage is stamped at build time via -ldflags.
+var defaultAsyncProcessorImage = "ghcr.io/llm-d-incubation/llm-d-async:latest"
+
 var (
 	scheme                  = runtime.NewScheme()
 	syncPeriodDefault       = 5 * time.Minute
@@ -77,7 +80,7 @@ func main() {
 		os.Exit(1)
 	}
 
-	if err := controller.NewLLMBatchGatewayReconciler(mgr.GetClient(), mgr.GetScheme(), helmRenderer, mgr.GetEventRecorderFor("llmbatchgateway-controller"), syncPeriod, reconcileTimeout).SetupWithManager(mgr); err != nil { //nolint:staticcheck
+	if err := controller.NewLLMBatchGatewayReconciler(mgr.GetClient(), mgr.GetScheme(), helmRenderer, mgr.GetEventRecorderFor("llmbatchgateway-controller"), syncPeriod, reconcileTimeout, defaultAsyncProcessorImage).SetupWithManager(mgr); err != nil { //nolint:staticcheck
 		logger.Error(err, "unable to create controller", "controller", "LLMBatchGateway")
 		os.Exit(1)
 	}

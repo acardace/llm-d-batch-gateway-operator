@@ -1,9 +1,15 @@
 VERSION ?= $(shell cat VERSION)
 IMG ?= ghcr.io/opendatahub-io/batch-gateway-operator:latest
+ASYNC_PROCESSOR_IMG ?= ghcr.io/llm-d-incubation/llm-d-async:v0.7.0-RC3
 CONTROLLER_GEN ?= go run sigs.k8s.io/controller-tools/cmd/controller-gen@v0.17.3
 ENVTEST ?= go run sigs.k8s.io/controller-runtime/tools/setup-envtest@release-0.21
 ENVTEST_K8S_VERSION ?= 1.33.0
 LOCALBIN ?= $(shell pwd)/bin/k8s
+
+## Utility
+
+print-%:
+	@echo $($*)
 
 ## Deps
 
@@ -15,7 +21,7 @@ deps:
 
 .PHONY: build
 build:
-	go build -ldflags "-X main.version=$(VERSION)" -o bin/manager ./cmd/
+	go build -ldflags "-X main.version=$(VERSION) -X main.defaultAsyncProcessorImage=$(ASYNC_PROCESSOR_IMG)" -o bin/manager ./cmd/
 
 ## Lint & Format
 
@@ -61,7 +67,10 @@ CONTAINER_TOOL ?= $(shell command -v docker 2>/dev/null || command -v podman 2>/
 
 .PHONY: docker-build
 docker-build:
-	$(CONTAINER_TOOL) build -t $(IMG) -f Dockerfile .
+	$(CONTAINER_TOOL) build -t $(IMG) \
+		--build-arg VERSION=$(VERSION) \
+		--build-arg ASYNC_PROCESSOR_IMG=$(ASYNC_PROCESSOR_IMG) \
+		-f Dockerfile .
 
 .PHONY: docker-push
 docker-push:
@@ -92,7 +101,6 @@ undeploy:
 
 KIND_CLUSTER_NAME ?= batch-gateway-dev
 DEPLOY_ASYNC_PROCESSOR ?= false
-ASYNC_PROCESSOR_IMG ?= ghcr.io/llm-d-incubation/llm-d-async-processor:latest
 
 .PHONY: dev-deploy
 dev-deploy: ## Deploy dev environment. Set DEPLOY_ASYNC_PROCESSOR=true to include the async processor.
