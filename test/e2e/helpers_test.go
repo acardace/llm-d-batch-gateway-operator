@@ -132,6 +132,19 @@ func findDeploymentByComponent(t *testing.T, namespace, instance, component stri
 	return name
 }
 
+func kubectlWait(t *testing.T, resource, name, namespace, condition string, timeout time.Duration) {
+	t.Helper()
+	ctx, cancel := context.WithTimeout(context.Background(), timeout+5*time.Second)
+	defer cancel()
+
+	timeoutStr := fmt.Sprintf("%ds", int(timeout.Seconds()))
+	out, err := kubectl(ctx, "wait", resource+"/"+name, "-n", namespace,
+		"--for=condition="+condition, "--timeout="+timeoutStr)
+	if err != nil {
+		t.Fatalf("kubectl wait %s/%s condition=%s: %v\n%s", resource, name, condition, err, out)
+	}
+}
+
 func getDeploymentReplicas(t *testing.T, name, namespace string) int64 {
 	t.Helper()
 	obj := kubectlGetJSON(t, "deployment", name, namespace)

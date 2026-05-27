@@ -11,11 +11,19 @@ var (
 	testCRName    = getEnvOrDefault("TEST_CR_NAME", "batch-gateway")
 )
 
+const asyncProcessorImage = "ghcr.io/llm-d-incubation/llm-d-async:v0.7.0-RC3"
+
 func TestE2E(t *testing.T) {
 	t.Run("Operator", func(t *testing.T) {
 		t.Run("StatusConditions", testStatusConditions)
 		t.Run("OrphanCleanup", testOrphanCleanup)
 		t.Run("SpecUpdate", testSpecUpdate)
+		t.Run("AsyncProcessor", func(t *testing.T) {
+			t.Run("DeploymentCreated", testAsyncProcessorDeploymentCreated)
+			t.Run("StatusCondition", testAsyncProcessorStatusCondition)
+			t.Run("SpecUpdatePropagates", testAsyncProcessorSpecUpdate)
+			t.Run("DisableRemovesResources", testAsyncProcessorDisable)
+		})
 	})
 }
 
@@ -89,4 +97,67 @@ func testSpecUpdate(t *testing.T) {
 
 func itoa(n int64) string {
 	return fmt.Sprintf("%d", n)
+}
+
+func asyncProcessorDeploymentName() string {
+	return testCRName + "-batch-gateway-asyncprocessor"
+}
+
+func enableAsyncProcessor(t *testing.T) {
+	t.Helper()
+	kubectlPatch(t, "llmbatchgateway", testCRName, testNamespace, fmt.Sprintf(
+		`{"spec":{"asyncProcessor":{"image":%q,"concurrency":8,"requestTimeout":"5m","pollIntervalMs":1000,"batchSize":10}}}`,
+		asyncProcessorImage,
+	))
+}
+
+func disableAsyncProcessor(t *testing.T) {
+	t.Helper()
+	kubectlPatch(t, "llmbatchgateway", testCRName, testNamespace,
+		`{"spec":{"asyncProcessor":null}}`)
+}
+
+func testAsyncProcessorDeploymentCreated(t *testing.T) {
+	enableAsyncProcessor(t)
+	t.Cleanup(func() { disableAsyncProcessor(t) })
+
+	waitForResourceExists(t, "deployment", asyncProcessorDeploymentName(), testNamespace, 60*time.Second)
+	waitForResourceExists(t, "serviceaccount", asyncProcessorDeploymentName(), testNamespace, 60*time.Second)
+}
+
+func testAsyncProcessorStatusCondition(t *testing.T) {
+	enableAsyncProcessor(t)
+	t.Cleanup(func() { disableAsyncProcessor(t) })
+
+	kubectlWait(t, "llmbatchgateway", testCRName, testNamespace, "AsyncProcessorAvailable", 120*time.Second)
+}
+
+func testAsyncProcessorSpecUpdate(t *testing.T) {
+	enableAsyncProcessor(t)
+	t.Cleanup(func() { disableAsyncProcessor(t) })
+
+	waitForResourceExists(t, "deployment", asyncProcessorDeploymentName(), testNamespace, 60*time.Second)
+
+	original := getDeploymentReplicas(t, asyncProcessorDeploymentName(), testNamespace)
+	target := original + 1
+
+	kubectlPatch(t, "llmbatchgateway", testCRName, testNamespace,
+		`{"spec":{"asyncProcessor":{"replicas":`+itoa(target)+`}}}`)
+	t.Cleanup(func() {
+		kubectlPatch(t, "llmbatchgateway", testCRName, testNamespace,
+			`{"spec":{"asyncProcessor":{"replicas":`+itoa(original)+`}}}`)
+	})
+
+	kubectlWait(t, "deployment", asyncProcessorDeploymentName(), testNamespace,
+		fmt.Sprintf("jsonpath={.spec.replicas}=%d", target), 60*time.Second)
+}
+
+func testAsyncProcessorDisable(t *testing.T) {
+	enableAsyncProcessor(t)
+	waitForResourceExists(t, "deployment", asyncProcessorDeploymentName(), testNamespace, 60*time.Second)
+
+	disableAsyncProcessor(t)
+
+	waitForResourceGone(t, "deployment", asyncProcessorDeploymentName(), testNamespace, 60*time.Second)
+	waitForResourceGone(t, "serviceaccount", asyncProcessorDeploymentName(), testNamespace, 60*time.Second)
 }
