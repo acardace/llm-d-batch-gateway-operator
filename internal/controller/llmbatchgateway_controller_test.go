@@ -67,7 +67,7 @@ func TestReconcile(t *testing.T) {
 	resyncTimeout := 5 * time.Minute
 	reconcileTimeout := 30 * time.Second
 
-	reconciler := NewLLMBatchGatewayReconciler(k8sClient, k8sClient.Scheme(), helmRenderer, fakeRecorder, resyncTimeout, reconcileTimeout)
+	reconciler := NewLLMBatchGatewayReconciler(k8sClient, k8sClient.Scheme(), helmRenderer, fakeRecorder, resyncTimeout, reconcileTimeout, "ghcr.io/llm-d-incubation/llm-d-async:v0.7.0-RC3")
 
 	t.Run("returns RequeueAfter on successful reconcile", func(t *testing.T) {
 		gw := newTestGateway("test-requeue")
@@ -596,6 +596,179 @@ func TestReconcile(t *testing.T) {
 	})
 }
 
+func TestAsyncProcessor(t *testing.T) {
+	ctx := context.Background()
+
+	helmRenderer, err := NewHelmRenderer("../../batch-gateway/charts/batch-gateway")
+	if err != nil {
+		t.Fatalf("NewHelmRenderer() error: %v", err)
+	}
+
+	fakeRecorder := record.NewFakeRecorder(100)
+	reconciler := NewLLMBatchGatewayReconciler(k8sClient, k8sClient.Scheme(), helmRenderer, fakeRecorder, 5*time.Minute, 30*time.Second, "ghcr.io/llm-d-incubation/llm-d-async:v0.7.0-RC3")
+
+	t.Run("creates Deployment and ServiceAccount when async processor is enabled", func(t *testing.T) {
+		gw := newTestGateway("test-ap-create")
+		gw.Spec.AsyncProcessor = &batchv1alpha1.AsyncProcessorSpec{
+			Image:          "ghcr.io/llm-d/async-processor:latest",
+			Concurrency:    8,
+			RequestTimeout: "5m",
+			PollIntervalMs: 1000,
+			BatchSize:      10,
+			Replicas:       ptr.To(int32(1)),
+		}
+		if err := k8sClient.Create(ctx, gw); err != nil {
+			t.Fatalf("creating CR: %v", err)
+		}
+		t.Cleanup(func() { _ = k8sClient.Delete(ctx, gw) })
+
+		if _, err := reconciler.Reconcile(ctx, reconcile.Request{
+			NamespacedName: types.NamespacedName{Name: gw.Name, Namespace: gw.Namespace},
+		}); err != nil {
+			t.Fatalf("Reconcile() error: %v", err)
+		}
+
+		var deployList appsv1.DeploymentList
+		if err := k8sClient.List(ctx, &deployList); err != nil {
+			t.Fatalf("listing Deployments: %v", err)
+		}
+		found := false
+		for _, d := range deployList.Items {
+			if d.Labels["app.kubernetes.io/component"] == "asyncprocessor" && isOwnedBy(&d, gw) {
+				found = true
+				break
+			}
+		}
+		if !found {
+			t.Error("expected async processor Deployment to be created")
+		}
+
+		var saList corev1.ServiceAccountList
+		if err := k8sClient.List(ctx, &saList); err != nil {
+			t.Fatalf("listing ServiceAccounts: %v", err)
+		}
+		foundSA := false
+		for _, sa := range saList.Items {
+			if sa.Labels["app.kubernetes.io/component"] == "asyncprocessor" && isOwnedBy(&sa, gw) {
+				foundSA = true
+				break
+			}
+		}
+		if !foundSA {
+			t.Error("expected async processor ServiceAccount to be created")
+		}
+	})
+
+	t.Run("AsyncProcessorAvailable condition set when async processor is enabled", func(t *testing.T) {
+		gw := newTestGateway("test-ap-condition")
+		gw.Spec.AsyncProcessor = &batchv1alpha1.AsyncProcessorSpec{
+			Image:          "ghcr.io/llm-d/async-processor:latest",
+			Concurrency:    8,
+			RequestTimeout: "5m",
+			PollIntervalMs: 1000,
+			BatchSize:      10,
+			Replicas:       ptr.To(int32(1)),
+		}
+		if err := k8sClient.Create(ctx, gw); err != nil {
+			t.Fatalf("creating CR: %v", err)
+		}
+		t.Cleanup(func() { _ = k8sClient.Delete(ctx, gw) })
+
+		if _, err := reconciler.Reconcile(ctx, reconcile.Request{
+			NamespacedName: types.NamespacedName{Name: gw.Name, Namespace: gw.Namespace},
+		}); err != nil {
+			t.Fatalf("Reconcile() error: %v", err)
+		}
+
+		var updated batchv1alpha1.LLMBatchGateway
+		if err := k8sClient.Get(ctx, types.NamespacedName{Name: gw.Name, Namespace: gw.Namespace}, &updated); err != nil {
+			t.Fatalf("getting CR: %v", err)
+		}
+
+		found := false
+		for _, c := range updated.Status.Conditions {
+			if c.Type == conditionAsyncProcessorAvailable {
+				found = true
+				break
+			}
+		}
+		if !found {
+			t.Error("expected AsyncProcessorAvailable condition to be set")
+		}
+	})
+
+	t.Run("AsyncProcessorAvailable condition absent when async processor is disabled", func(t *testing.T) {
+		gw := newTestGateway("test-ap-disabled")
+		// No AsyncProcessor spec — disabled.
+		if err := k8sClient.Create(ctx, gw); err != nil {
+			t.Fatalf("creating CR: %v", err)
+		}
+		t.Cleanup(func() { _ = k8sClient.Delete(ctx, gw) })
+
+		if _, err := reconciler.Reconcile(ctx, reconcile.Request{
+			NamespacedName: types.NamespacedName{Name: gw.Name, Namespace: gw.Namespace},
+		}); err != nil {
+			t.Fatalf("Reconcile() error: %v", err)
+		}
+
+		var updated batchv1alpha1.LLMBatchGateway
+		if err := k8sClient.Get(ctx, types.NamespacedName{Name: gw.Name, Namespace: gw.Namespace}, &updated); err != nil {
+			t.Fatalf("getting CR: %v", err)
+		}
+
+		for _, c := range updated.Status.Conditions {
+			if c.Type == conditionAsyncProcessorAvailable {
+				t.Error("unexpected AsyncProcessorAvailable condition when async processor is disabled")
+			}
+		}
+	})
+
+	t.Run("disabling async processor removes its resources", func(t *testing.T) {
+		gw := newTestGateway("test-ap-disable-cleanup")
+		gw.Spec.AsyncProcessor = &batchv1alpha1.AsyncProcessorSpec{
+			Image:          "ghcr.io/llm-d/async-processor:latest",
+			Concurrency:    8,
+			RequestTimeout: "5m",
+			PollIntervalMs: 1000,
+			BatchSize:      10,
+			Replicas:       ptr.To(int32(1)),
+		}
+		if err := k8sClient.Create(ctx, gw); err != nil {
+			t.Fatalf("creating CR: %v", err)
+		}
+		t.Cleanup(func() { _ = k8sClient.Delete(ctx, gw) })
+
+		nn := types.NamespacedName{Name: gw.Name, Namespace: gw.Namespace}
+
+		if _, err := reconciler.Reconcile(ctx, reconcile.Request{NamespacedName: nn}); err != nil {
+			t.Fatalf("first Reconcile() error: %v", err)
+		}
+
+		// Disable async processor.
+		if err := k8sClient.Get(ctx, nn, gw); err != nil {
+			t.Fatalf("getting CR: %v", err)
+		}
+		gw.Spec.AsyncProcessor = nil
+		if err := k8sClient.Update(ctx, gw); err != nil {
+			t.Fatalf("updating CR: %v", err)
+		}
+
+		if _, err := reconciler.Reconcile(ctx, reconcile.Request{NamespacedName: nn}); err != nil {
+			t.Fatalf("second Reconcile() error: %v", err)
+		}
+
+		var deployList appsv1.DeploymentList
+		if err := k8sClient.List(ctx, &deployList); err != nil {
+			t.Fatalf("listing Deployments: %v", err)
+		}
+		for _, d := range deployList.Items {
+			if d.Labels["app.kubernetes.io/component"] == "asyncprocessor" && isOwnedBy(&d, gw) {
+				t.Error("async processor Deployment should have been deleted")
+			}
+		}
+	})
+}
+
 func TestConditionHelpers(t *testing.T) {
 	if got := conditionStatus(true); got != metav1.ConditionTrue {
 		t.Errorf("conditionStatus(true) = %v, want True", got)
@@ -655,7 +828,7 @@ func TestReconcileTimeout(t *testing.T) {
 	resyncTimeout := 5 * time.Minute
 	reconcileTimeout := -1 * time.Second
 	// Use a 1ns timeout so the context is expired before the first API call.
-	reconciler := NewLLMBatchGatewayReconciler(k8sClient, k8sClient.Scheme(), helmRenderer, fakeRecorder, resyncTimeout, reconcileTimeout)
+	reconciler := NewLLMBatchGatewayReconciler(k8sClient, k8sClient.Scheme(), helmRenderer, fakeRecorder, resyncTimeout, reconcileTimeout, "ghcr.io/llm-d-incubation/llm-d-async:v0.7.0-RC3")
 
 	gw := newTestGateway("test-timeout")
 	if err := k8sClient.Create(ctx, gw); err != nil {

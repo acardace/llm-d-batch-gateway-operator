@@ -30,13 +30,15 @@ import (
 	gatewayv1beta1 "sigs.k8s.io/gateway-api/apis/v1beta1"
 
 	batchv1alpha1 "github.com/opendatahub-io/llm-d-batch-gateway-operator/api/v1alpha1"
+	"github.com/opendatahub-io/llm-d-batch-gateway-operator/internal/asyncprocessor"
 )
 
 const (
-	conditionReady              = "Ready"
-	conditionAPIServerAvailable = "APIServerAvailable"
-	conditionProcessorAvailable = "ProcessorAvailable"
-	conditionGCAvailable        = "GCAvailable"
+	conditionReady                   = "Ready"
+	conditionAPIServerAvailable      = "APIServerAvailable"
+	conditionProcessorAvailable      = "ProcessorAvailable"
+	conditionGCAvailable             = "GCAvailable"
+	conditionAsyncProcessorAvailable = "AsyncProcessorAvailable"
 
 	fieldOwner = "llmbatchgateway-controller"
 
@@ -79,23 +81,25 @@ type resourceKey struct {
 
 type LLMBatchGatewayReconciler struct {
 	client.Client
-	Scheme           *runtime.Scheme
-	HelmRenderer     *HelmRenderer
-	Recorder         record.EventRecorder
-	ReconcileTimeout time.Duration
-	SyncPeriod       time.Duration
-	secretFilter     *secretWatchFilter
+	Scheme                     *runtime.Scheme
+	HelmRenderer               *HelmRenderer
+	Recorder                   record.EventRecorder
+	ReconcileTimeout           time.Duration
+	SyncPeriod                 time.Duration
+	DefaultAsyncProcessorImage string
+	secretFilter               *secretWatchFilter
 }
 
-func NewLLMBatchGatewayReconciler(c client.Client, scheme *runtime.Scheme, helm *HelmRenderer, recorder record.EventRecorder, syncPeriod time.Duration, reconcileTimeout time.Duration) *LLMBatchGatewayReconciler {
+func NewLLMBatchGatewayReconciler(c client.Client, scheme *runtime.Scheme, helm *HelmRenderer, recorder record.EventRecorder, syncPeriod time.Duration, reconcileTimeout time.Duration, defaultAsyncProcessorImage string) *LLMBatchGatewayReconciler {
 	return &LLMBatchGatewayReconciler{
-		Client:           c,
-		Scheme:           scheme,
-		HelmRenderer:     helm,
-		Recorder:         recorder,
-		ReconcileTimeout: reconcileTimeout,
-		SyncPeriod:       syncPeriod,
-		secretFilter:     &secretWatchFilter{watched: make(map[string]struct{})},
+		Client:                     c,
+		Scheme:                     scheme,
+		HelmRenderer:               helm,
+		Recorder:                   recorder,
+		ReconcileTimeout:           reconcileTimeout,
+		SyncPeriod:                 syncPeriod,
+		DefaultAsyncProcessorImage: defaultAsyncProcessorImage,
+		secretFilter:               &secretWatchFilter{watched: make(map[string]struct{})},
 	}
 }
 
@@ -190,6 +194,16 @@ func (r *LLMBatchGatewayReconciler) Reconcile(ctx context.Context, req ctrl.Requ
 		}
 		return ctrl.Result{}, fmt.Errorf("rendering chart: %w", err)
 	}
+
+	if gw.Spec.AsyncProcessor != nil && gw.Spec.AsyncProcessor.Image == "" {
+		gw.Spec.AsyncProcessor.Image = r.DefaultAsyncProcessorImage
+	}
+
+	asyncObjects, err := asyncprocessor.Build(&gw, localSecretName)
+	if err != nil {
+		return ctrl.Result{}, fmt.Errorf("building async processor resources: %w", err)
+	}
+	objects = append(objects, asyncObjects...)
 
 	for _, obj := range objects {
 		obj.SetNamespace(gw.Namespace)
@@ -316,6 +330,8 @@ func (r *LLMBatchGatewayReconciler) updateStatus(ctx context.Context, gw *batchv
 			componentStatus.Processor = status
 		case "gc":
 			componentStatus.GC = status
+		case "asyncprocessor":
+			componentStatus.AsyncProcessor = status
 		}
 	}
 
@@ -349,7 +365,19 @@ func (r *LLMBatchGatewayReconciler) updateStatus(ctx context.Context, gw *batchv
 		ObservedGeneration: gw.Generation,
 	})
 
-	ready := apiAvailable && procAvailable && gcAvailable
+	asyncEnabled := gw.Spec.AsyncProcessor != nil
+	asyncAvailable := componentStatus.AsyncProcessor != nil && componentStatus.AsyncProcessor.ReadyReplicas >= 1
+	if asyncEnabled {
+		meta.SetStatusCondition(&gw.Status.Conditions, metav1.Condition{
+			Type:               conditionAsyncProcessorAvailable,
+			Status:             conditionStatus(asyncAvailable),
+			Reason:             conditionReason(asyncAvailable, "Available", "Unavailable"),
+			Message:            conditionMessage(asyncAvailable, "Async processor has at least one ready replica", "Async processor has no ready replicas"),
+			ObservedGeneration: gw.Generation,
+		})
+	}
+
+	ready := apiAvailable && procAvailable && gcAvailable && (!asyncEnabled || asyncAvailable)
 
 	// Snapshot the previous Ready condition before overwriting it so we can
 	// detect transitions and emit an event only when the state changes.
