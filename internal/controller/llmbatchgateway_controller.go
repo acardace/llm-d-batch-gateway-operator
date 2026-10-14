@@ -660,6 +660,12 @@ func conditionReason(ok bool, trueReason, falseReason string) string {
 }
 
 func validateSpec(gw *batchv1alpha1.LLMBatchGateway) error {
+	if gw.Spec.DBBackend != "" && gw.Spec.DBBackend != "postgresql" {
+		return fmt.Errorf("spec.dbBackend %q is not supported; only \"postgresql\" is supported by batch-gateway", gw.Spec.DBBackend)
+	}
+	if gw.Spec.Redis != nil {
+		return errors.New("spec.redis is not supported by batch-gateway; configure Redis under spec.processor.asyncConfig")
+	}
 	hasGlobal := gw.Spec.Processor.GlobalInferenceGateway != nil
 	hasModel := len(gw.Spec.Processor.ModelGateways) > 0
 	if !hasGlobal && !hasModel {

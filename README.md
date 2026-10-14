@@ -167,7 +167,7 @@ One command sets up a full local environment:
 make dev-deploy
 ```
 
-This creates a Kind cluster and deploys PostgreSQL, Redis, MinIO, a vLLM simulator, the operator, and applies a dev `LLMBatchGateway` CR. Configurable via environment variables:
+This creates a Kind cluster and deploys PostgreSQL, SeaweedFS, and Redis for async profiles, plus a vLLM simulator, the operator, and a dev `LLMBatchGateway` CR. Configurable via environment variables:
 
 | Variable | Default | Description |
 |----------|---------|-------------|
@@ -175,8 +175,8 @@ This creates a Kind cluster and deploys PostgreSQL, Redis, MinIO, a vLLM simulat
 | `NAMESPACE` | `default` | Target namespace |
 | `OPERATOR_IMG` | `localhost/llm-d-batch-gateway-operator:dev` | Operator image |
 | `POSTGRESQL_PASSWORD` | `postgres` | PostgreSQL password |
-| `MINIO_ROOT_USER` | `minioadmin` | MinIO access key |
-| `MINIO_ROOT_PASSWORD` | `minioadmin` | MinIO secret key |
+| `SEAWEEDFS_ACCESS_KEY` | `seaweedfsadmin` | SeaweedFS S3 access key |
+| `SEAWEEDFS_SECRET_KEY` | `seaweedfsadmin` | SeaweedFS S3 secret key |
 | `APISERVER_IMG` | `ghcr.io/llm-d/batch-gateway-apiserver:latest` | API server image |
 | `PROCESSOR_IMG` | `ghcr.io/llm-d/batch-gateway-processor:latest` | Processor image |
 | `GC_IMG` | `ghcr.io/llm-d/batch-gateway-gc:latest` | GC image |
@@ -204,4 +204,3 @@ make docker-build                           # build with default tag
 make docker-build IMG=my-registry/operator:v0.1.0  # custom image
 make docker-push IMG=my-registry/operator:v0.1.0
 ```
-

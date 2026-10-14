@@ -110,7 +110,8 @@ func TestSpecToHelmValues(t *testing.T) {
 			SecretRef: corev1.SecretReference{
 				Name: "my-secret",
 			},
-			DBBackend: "postgresql",
+			DBBackend:      "postgresql",
+			ExtraEndpoints: []string{"/v1/classify"},
 			FileStorage: &batchv1alpha1.FileStorageSpec{
 				S3: &batchv1alpha1.S3StorageSpec{
 					Region:   "us-east-1",
@@ -169,6 +170,14 @@ func TestSpecToHelmValues(t *testing.T) {
 		dbClient := global["dbClient"].(map[string]interface{})
 		if _, ok := dbClient["redis"]; ok {
 			t.Error("dbClient.redis should not be present when RedisClient is nil")
+		}
+	})
+
+	t.Run("global extra endpoints", func(t *testing.T) {
+		global := vals["global"].(map[string]interface{})
+		endpoints := global["extraEndpoints"].([]interface{})
+		if len(endpoints) != 1 || endpoints[0] != "/v1/classify" {
+			t.Errorf("global.extraEndpoints = %v, want [/v1/classify]", endpoints)
 		}
 	})
 
@@ -548,8 +557,11 @@ func TestSpecToHelmValues_OTEL(t *testing.T) {
 	if got := otel["sampler"]; got != "parentbased_traceidratio" {
 		t.Errorf("otel.sampler = %v", got)
 	}
-	if got := otel["redisTracing"]; got != true {
-		t.Errorf("otel.redisTracing = %v, want true", got)
+	if _, ok := otel["redisTracing"]; ok {
+		t.Error("otel.redisTracing must not be rendered by the current chart")
+	}
+	if got := otel["postgresqlTracing"]; got != true {
+		t.Errorf("otel.postgresqlTracing = %v, want true", got)
 	}
 }
 
@@ -810,6 +822,7 @@ func TestSpecToHelmValues_APIServerConfig(t *testing.T) {
 		BatchAPI: &batchv1alpha1.BatchAPIConfig{
 			EventTTLSeconds:    3600,
 			PassThroughHeaders: []string{"X-Request-ID", "Authorization"},
+			ExtraEndpoints:     []string{"/v1/classify"},
 		},
 		FileAPI: &batchv1alpha1.FileAPIConfig{
 			DefaultExpirationSeconds: 86400,
@@ -850,16 +863,23 @@ func TestSpecToHelmValues_APIServerConfig(t *testing.T) {
 	if len(headers) != 2 || headers[0] != "X-Request-ID" {
 		t.Errorf("passThroughHeaders = %v", headers)
 	}
+	if endpoints := batchAPI["extraEndpoints"].([]interface{}); len(endpoints) != 1 || endpoints[0] != "/v1/classify" {
+		t.Errorf("batchAPI.extraEndpoints = %v, want [/v1/classify]", endpoints)
+	}
 
 	fileAPI := config["fileAPI"].(map[string]interface{})
 	if got := fileAPI["defaultExpirationSeconds"]; got != int64(86400) {
 		t.Errorf("fileAPI.defaultExpirationSeconds = %v, want 86400", got)
 	}
-	if got := fileAPI["maxSizeBytes"]; got != int64(104857600) {
-		t.Errorf("fileAPI.maxSizeBytes = %v, want 104857600", got)
+	if _, found := fileAPI["maxSizeBytes"]; found {
+		t.Error("fileAPI.maxSizeBytes should not be rendered by the current chart")
 	}
 	if got := fileAPI["maxLineCount"]; got != int64(100000) {
 		t.Errorf("fileAPI.maxLineCount = %v, want 100000", got)
+	}
+	global := vals["global"].(map[string]interface{})
+	if got := global["maxInputFileSizeBytes"]; got != int64(104857600) {
+		t.Errorf("global.maxInputFileSizeBytes = %v, want 104857600", got)
 	}
 }
 
@@ -873,8 +893,10 @@ func TestSpecToHelmValues_ProcessorConfig(t *testing.T) {
 			PerEndpoint: 16,
 			Recovery:    4,
 		},
+		InputFileDiskBudgetPercent:     20,
+		ExtraEndpoints:                 []string{"/v1/classify"},
 		DefaultOutputExpirationSeconds: 7200,
-		ProgressTTLSeconds:             3600,
+		ProgressUpdateInterval:         "30s",
 		EnablePprof:                    true,
 	}
 
@@ -909,8 +931,14 @@ func TestSpecToHelmValues_ProcessorConfig(t *testing.T) {
 	if got := config["defaultOutputExpirationSeconds"]; got != int64(7200) {
 		t.Errorf("defaultOutputExpirationSeconds = %v, want 7200", got)
 	}
-	if got := config["progressTTLSeconds"]; got != int64(3600) {
-		t.Errorf("progressTTLSeconds = %v, want 3600", got)
+	if got := config["progressUpdateInterval"]; got != "30s" {
+		t.Errorf("progressUpdateInterval = %v, want 30s", got)
+	}
+	if got := config["inputFileDiskBudgetPercent"]; got != int64(20) {
+		t.Errorf("inputFileDiskBudgetPercent = %v, want 20", got)
+	}
+	if endpoints := config["extraEndpoints"].([]interface{}); len(endpoints) != 1 || endpoints[0] != "/v1/classify" {
+		t.Errorf("processor.extraEndpoints = %v, want [/v1/classify]", endpoints)
 	}
 	if got := config["enablePprof"]; got != true {
 		t.Errorf("enablePprof = %v, want true", got)
@@ -1061,7 +1089,7 @@ func TestSpecToHelmValues_InferenceGatewayMaxRetries(t *testing.T) {
 	}
 }
 
-func TestSpecToHelmValues_RedisTLS(t *testing.T) {
+func TestSpecToHelmValues_CoreRedisSettingsIgnored(t *testing.T) {
 	gw := minimalGateway()
 	gw.Spec.Redis = &batchv1alpha1.RedisClientSpec{
 		EnableTLS: true,
@@ -1072,12 +1100,8 @@ func TestSpecToHelmValues_RedisTLS(t *testing.T) {
 
 	global := vals["global"].(map[string]interface{})
 	dbClient := global["dbClient"].(map[string]interface{})
-	redis := dbClient["redis"].(map[string]interface{})
-	if got := redis["enableTLS"]; got != true {
-		t.Errorf("dbClient.redis.enableTLS = %v, want true", got)
-	}
-	if got := redis["insecure"]; got != true {
-		t.Errorf("dbClient.redis.insecure = %v, want true", got)
+	if _, ok := dbClient["redis"]; ok {
+		t.Error("dbClient.redis must not be rendered by the current chart")
 	}
 }
 

@@ -16,18 +16,22 @@ func specToBatchHelmValues(gw *batchv1alpha1.LLMBatchGateway, secretName string,
 	vals := map[string]any{}
 
 	// --- Global ---
-	dbClient := map[string]any{
-		"type": gw.Spec.DBBackend,
+	dbType := gw.Spec.DBBackend
+	if dbType == "" {
+		dbType = "postgresql"
 	}
-	if gw.Spec.Redis != nil {
-		dbClient["redis"] = map[string]any{
-			"enableTLS": gw.Spec.Redis.EnableTLS,
-			"insecure":  gw.Spec.Redis.Insecure,
-		}
+	dbClient := map[string]any{
+		"type": dbType,
 	}
 	global := map[string]any{
 		"secretName": secretName,
 		"dbClient":   dbClient,
+	}
+	if gw.Spec.ExtraEndpoints != nil {
+		global["extraEndpoints"] = toInterfaceSlice(gw.Spec.ExtraEndpoints)
+	}
+	if gw.Spec.APIServer.Config != nil && gw.Spec.APIServer.Config.FileAPI != nil && gw.Spec.APIServer.Config.FileAPI.MaxSizeBytes != 0 {
+		global["maxInputFileSizeBytes"] = gw.Spec.APIServer.Config.FileAPI.MaxSizeBytes
 	}
 
 	if gw.Spec.FileStorage != nil {
@@ -79,7 +83,6 @@ func specToBatchHelmValues(gw *batchv1alpha1.LLMBatchGateway, secretName string,
 		otelVals["insecure"] = otel.Insecure
 		setIfNotEmpty(otelVals, "sampler", otel.Sampler)
 		setIfNotEmpty(otelVals, "samplerArg", otel.SamplerArg)
-		otelVals["redisTracing"] = otel.RedisTracing
 		otelVals["postgresqlTracing"] = otel.PostgresqlTracing
 		global["otel"] = otelVals
 	}
@@ -415,6 +418,9 @@ func apiServerConfigToMap(cfg *batchv1alpha1.APIServerConfigSpec) map[string]int
 		if len(cfg.BatchAPI.PassThroughHeaders) > 0 {
 			ba["passThroughHeaders"] = toInterfaceSlice(cfg.BatchAPI.PassThroughHeaders)
 		}
+		if cfg.BatchAPI.ExtraEndpoints != nil {
+			ba["extraEndpoints"] = toInterfaceSlice(cfg.BatchAPI.ExtraEndpoints)
+		}
 		if len(ba) > 0 {
 			m["batchAPI"] = ba
 		}
@@ -423,9 +429,6 @@ func apiServerConfigToMap(cfg *batchv1alpha1.APIServerConfigSpec) map[string]int
 		fa := map[string]interface{}{}
 		if cfg.FileAPI.DefaultExpirationSeconds != 0 {
 			fa["defaultExpirationSeconds"] = cfg.FileAPI.DefaultExpirationSeconds
-		}
-		if cfg.FileAPI.MaxSizeBytes != 0 {
-			fa["maxSizeBytes"] = cfg.FileAPI.MaxSizeBytes
 		}
 		if cfg.FileAPI.MaxLineCount != 0 {
 			fa["maxLineCount"] = cfg.FileAPI.MaxLineCount
@@ -446,6 +449,12 @@ func apiServerConfigToMap(cfg *batchv1alpha1.APIServerConfigSpec) map[string]int
 func mergeProcessorConfig(m map[string]interface{}, cfg *batchv1alpha1.ProcessorConfigSpec) {
 	if cfg.NumWorkers != 0 {
 		m["numWorkers"] = int64(cfg.NumWorkers)
+	}
+	if cfg.InputFileDiskBudgetPercent != 0 {
+		m["inputFileDiskBudgetPercent"] = int64(cfg.InputFileDiskBudgetPercent)
+	}
+	if cfg.ExtraEndpoints != nil {
+		m["extraEndpoints"] = toInterfaceSlice(cfg.ExtraEndpoints)
 	}
 	if cfg.Concurrency != nil {
 		concurrency := map[string]interface{}{}
@@ -503,8 +512,8 @@ func mergeProcessorConfig(m map[string]interface{}, cfg *batchv1alpha1.Processor
 	if cfg.DefaultOutputExpirationSeconds != 0 {
 		m["defaultOutputExpirationSeconds"] = cfg.DefaultOutputExpirationSeconds
 	}
-	if cfg.ProgressTTLSeconds != 0 {
-		m["progressTTLSeconds"] = cfg.ProgressTTLSeconds
+	if cfg.ProgressUpdateInterval != "" {
+		m["progressUpdateInterval"] = cfg.ProgressUpdateInterval
 	}
 	if cfg.SendFairnessHeader != nil {
 		m["sendFairnessHeader"] = *cfg.SendFairnessHeader

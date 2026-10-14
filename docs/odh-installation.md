@@ -22,8 +22,9 @@ opendatahub-operator (platform orchestrator)
 
 - OpenShift cluster with ODH operator installed
 - `oc` / `kubectl` CLI connected to the cluster
-- `helm` (for installing test prerequisites: PostgreSQL, Redis, MinIO)
-- External dependencies for LLMBatchGateway: PostgreSQL, Redis, S3-compatible storage
+- `helm` (for installing PostgreSQL and optional Redis test dependencies)
+- `kubectl` (for installing the SeaweedFS test dependency)
+- External dependencies for LLMBatchGateway: PostgreSQL and S3-compatible storage. Async dispatch also needs Redis for llm-d-async queues.
 
 ## Installation
 
@@ -99,20 +100,27 @@ status:
 
 ### Step 2: Set up external dependencies
 
-LLMBatchGateway requires PostgreSQL, Redis, and S3-compatible storage. For testing, use the provided script:
+LLMBatchGateway requires PostgreSQL and S3-compatible storage. Async dispatch also requires Redis for llm-d-async queues. For synchronous testing, use the provided script:
 
 ```bash
 export NAMESPACE=batch-api
 bash hack/setup-prereqs.sh
 ```
 
+For async testing, install Redis as well:
+
+```bash
+INSTALL_REDIS=true bash hack/setup-prereqs.sh
+```
+
 This creates the `$NAMESPACE` namespace and installs:
 - PostgreSQL (`postgresql.$NAMESPACE.svc.cluster.local:5432`)
-- Redis (`redis-master.$NAMESPACE.svc.cluster.local:6379`)
-- MinIO (`minio.$NAMESPACE.svc.cluster.local:9000`, bucket: `batch-gateway`)
+- SeaweedFS S3 (`seaweedfs.$NAMESPACE.svc.cluster.local:8333`, bucket: `batch-gateway`)
 - `batch-gateway-secrets` Secret
 
-For production, replace with your own PostgreSQL, Redis, and S3 endpoints and update the CR spec accordingly.
+The async setup also installs Redis at `redis-master.$NAMESPACE.svc.cluster.local:6379` and adds its URL to `batch-gateway-secrets`.
+
+For production, replace PostgreSQL and S3 with your own endpoints. Configure Redis only when using async dispatch.
 
 ### Step 3: Create LLMBatchGateway CR
 
@@ -127,17 +135,22 @@ spec:
   secretRef:
     name: batch-gateway-secrets
   dbBackend: postgresql
+  extraEndpoints:
+  - /v1/classify
   fileStorage:
     s3:
       region: us-east-1
-      endpoint: http://minio.$NAMESPACE.svc.cluster.local:9000
-      accessKeyId: minioadmin
+      endpoint: http://seaweedfs.$NAMESPACE.svc.cluster.local:8333
+      accessKeyId: seaweedfsadmin
       usePathStyle: true
       autoCreateBucket: true
   apiServer:
     replicas: 1
   processor:
     replicas: 1
+    config:
+      inputFileDiskBudgetPercent: 10
+      progressUpdateInterval: 15s
     # Preserve synchronous dispatch for this existing-style configuration.
     dispatchMode: sync
     globalInferenceGateway:
@@ -176,9 +189,9 @@ spec:
   dbBackend: postgresql
   fileStorage:
     s3:
-      accessKeyId: minioadmin
+      accessKeyId: seaweedfsadmin
       autoCreateBucket: true
-      endpoint: http://minio.batch-api.svc.cluster.local:9000
+      endpoint: http://seaweedfs.batch-api.svc.cluster.local:8333
       region: us-east-1
       usePathStyle: true
   gc:

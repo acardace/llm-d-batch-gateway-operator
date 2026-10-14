@@ -3,13 +3,14 @@ set -euo pipefail
 
 # ── Setup prerequisites for LLMBatchGateway CR ──────────────────────────────
 #
-# Installs PostgreSQL, Redis, MinIO (with bucket), and creates the
+# Installs PostgreSQL, Redis, SeaweedFS (with bucket), and creates the
 # batch-gateway-secrets Secret in the target namespace.
 # Run this before creating a LLMBatchGateway CR.
 #
 # Usage:
 #   ./hack/setup-prereqs.sh                    # install in batch-api namespace
 #   NAMESPACE=my-ns ./hack/setup-prereqs.sh    # install in custom namespace
+#   INSTALL_REDIS=true ./hack/setup-prereqs.sh  # also install Redis for async dispatch
 
 # ── Configuration ────────────────────────────────────────────────────────────
 
@@ -19,11 +20,12 @@ POSTGRESQL_RELEASE="${POSTGRESQL_RELEASE:-postgresql}"
 POSTGRESQL_PASSWORD="${POSTGRESQL_PASSWORD:-postgres}"
 
 REDIS_RELEASE="${REDIS_RELEASE:-redis}"
+INSTALL_REDIS="${INSTALL_REDIS:-false}"
 
-MINIO_RELEASE="${MINIO_RELEASE:-minio}"
-MINIO_ROOT_USER="${MINIO_ROOT_USER:-minioadmin}"
-MINIO_ROOT_PASSWORD="${MINIO_ROOT_PASSWORD:-minioadmin}"
-MINIO_BUCKET="${MINIO_BUCKET:-batch-gateway}"
+SEAWEEDFS_RELEASE="${SEAWEEDFS_RELEASE:-seaweedfs}"
+SEAWEEDFS_ACCESS_KEY="${SEAWEEDFS_ACCESS_KEY:-seaweedfsadmin}"
+SEAWEEDFS_SECRET_KEY="${SEAWEEDFS_SECRET_KEY:-seaweedfsadmin}"
+SEAWEEDFS_BUCKET="${SEAWEEDFS_BUCKET:-batch-gateway}"
 
 FILE_CLIENT_TYPE="${FILE_CLIENT_TYPE:-s3}"
 FILES_PVC_NAME="${FILES_PVC_NAME:-batch-gateway-files}"
@@ -91,49 +93,49 @@ install_redis() {
     log "Redis installed (standalone, no auth)."
 }
 
-install_minio() {
-    step "Installing MinIO..."
-    if kubectl get deployment "${MINIO_RELEASE}" -n "${NAMESPACE}" &>/dev/null; then
-        log "MinIO already exists. Skipping."
-        return
-    fi
-
-    kubectl apply -f - <<EOF
+install_seaweedfs() {
+    step "Installing SeaweedFS..."
+    if kubectl get deployment "${SEAWEEDFS_RELEASE}" -n "${NAMESPACE}" &>/dev/null; then
+        log "SeaweedFS already exists. Skipping deployment creation."
+    else
+        kubectl apply -f - <<EOF
 apiVersion: apps/v1
 kind: Deployment
 metadata:
-  name: ${MINIO_RELEASE}
+  name: ${SEAWEEDFS_RELEASE}
   namespace: ${NAMESPACE}
   labels:
-    app: ${MINIO_RELEASE}
+    app: ${SEAWEEDFS_RELEASE}
 spec:
   replicas: 1
   selector:
     matchLabels:
-      app: ${MINIO_RELEASE}
+      app: ${SEAWEEDFS_RELEASE}
   template:
     metadata:
       labels:
-        app: ${MINIO_RELEASE}
+        app: ${SEAWEEDFS_RELEASE}
     spec:
       containers:
-      - name: minio
-        image: quay.io/minio/minio:RELEASE.2024-12-18T13-15-44Z
-        args: ["server", "/data", "--console-address", ":9001"]
+      - name: seaweedfs
+        image: chrislusf/seaweedfs:4.48
+        args:
+        - server
+        - -dir=/data
+        - -ip.bind=0.0.0.0
+        - -s3
+        - -s3.port=8333
         env:
-        - name: MINIO_ROOT_USER
-          value: "${MINIO_ROOT_USER}"
-        - name: MINIO_ROOT_PASSWORD
-          value: "${MINIO_ROOT_PASSWORD}"
+        - name: AWS_ACCESS_KEY_ID
+          value: "${SEAWEEDFS_ACCESS_KEY}"
+        - name: AWS_SECRET_ACCESS_KEY
+          value: "${SEAWEEDFS_SECRET_KEY}"
         ports:
-        - containerPort: 9000
-          name: api
-        - containerPort: 9001
-          name: console
+        - containerPort: 8333
+          name: s3
         readinessProbe:
-          httpGet:
-            path: /minio/health/ready
-            port: 9000
+          tcpSocket:
+            port: s3
           initialDelaySeconds: 5
           periodSeconds: 5
         volumeMounts:
@@ -146,35 +148,47 @@ spec:
 apiVersion: v1
 kind: Service
 metadata:
-  name: ${MINIO_RELEASE}
+  name: ${SEAWEEDFS_RELEASE}
   namespace: ${NAMESPACE}
   labels:
-    app: ${MINIO_RELEASE}
+    app: ${SEAWEEDFS_RELEASE}
 spec:
   selector:
-    app: ${MINIO_RELEASE}
+    app: ${SEAWEEDFS_RELEASE}
   ports:
-  - name: api
-    port: 9000
-    targetPort: 9000
-  - name: console
-    port: 9001
-    targetPort: 9001
+  - name: s3
+    port: 8333
+    targetPort: 8333
 EOF
+    fi
 
-    wait_for_deployment "${MINIO_RELEASE}" "${NAMESPACE}"
+    wait_for_deployment "${SEAWEEDFS_RELEASE}" "${NAMESPACE}"
 
-    step "Creating MinIO bucket '${MINIO_BUCKET}'..."
-    local minio_pod
-    minio_pod=$(kubectl get pod -n "${NAMESPACE}" -l "app=${MINIO_RELEASE}" \
+    step "Ensuring SeaweedFS bucket '${SEAWEEDFS_BUCKET}'..."
+    local seaweedfs_pod bucket_list bucket_query_ready=false
+    seaweedfs_pod=$(kubectl get pod -n "${NAMESPACE}" -l "app=${SEAWEEDFS_RELEASE}" \
         -o jsonpath='{.items[0].metadata.name}')
-    [ -z "${minio_pod}" ] && die "No MinIO pod found"
-    kubectl exec -n "${NAMESPACE}" "${minio_pod}" -- \
-        mc alias set local http://localhost:9000 "${MINIO_ROOT_USER}" "${MINIO_ROOT_PASSWORD}" 2>/dev/null \
-        || die "Failed to configure MinIO client"
-    kubectl exec -n "${NAMESPACE}" "${minio_pod}" -- \
-        mc mb "local/${MINIO_BUCKET}" 2>/dev/null || true
-    log "MinIO installed (bucket: ${MINIO_BUCKET})."
+    [ -z "${seaweedfs_pod}" ] && die "No SeaweedFS pod found"
+
+    for _ in $(seq 1 30); do
+        if bucket_list=$(printf 's3.bucket.list\n' | kubectl exec -i -n "${NAMESPACE}" "${seaweedfs_pod}" -- \
+            weed shell -master=localhost:9333 -filer=localhost:8888 2>/dev/null); then
+            bucket_query_ready=true
+            break
+        fi
+        sleep 2
+    done
+    [ "${bucket_query_ready}" = true ] || die "Failed to query SeaweedFS buckets"
+
+    if printf '%s\n' "${bucket_list}" | awk -v bucket="${SEAWEEDFS_BUCKET}" '$1 == bucket { found=1 } END { exit !found }'; then
+        log "SeaweedFS bucket '${SEAWEEDFS_BUCKET}' already exists."
+    else
+        printf 's3.bucket.create -name %s\n' "${SEAWEEDFS_BUCKET}" | \
+            kubectl exec -i -n "${NAMESPACE}" "${seaweedfs_pod}" -- \
+            weed shell -master=localhost:9333 -filer=localhost:8888 \
+            || die "Failed to create SeaweedFS bucket '${SEAWEEDFS_BUCKET}'"
+        log "SeaweedFS installed (bucket: ${SEAWEEDFS_BUCKET})."
+    fi
 }
 
 create_pvc() {
@@ -207,8 +221,12 @@ EOF
 create_secret() {
     step "Creating ${SECRET_NAME}..."
 
-    local redis_url="redis://${REDIS_RELEASE}-master.${NAMESPACE}.svc.cluster.local:6379/0"
     local postgresql_url="postgresql://postgres:${POSTGRESQL_PASSWORD}@${POSTGRESQL_RELEASE}.${NAMESPACE}.svc.cluster.local:5432/batch?sslmode=disable"
+    local redis_secret_entry=""
+    if [ "${INSTALL_REDIS}" = true ]; then
+        local redis_url="redis://${REDIS_RELEASE}-master.${NAMESPACE}.svc.cluster.local:6379/0"
+        redis_secret_entry="  redis-url: \"${redis_url}\""
+    fi
 
     kubectl apply -f - <<EOF
 apiVersion: v1
@@ -217,10 +235,10 @@ metadata:
   name: ${SECRET_NAME}
   namespace: ${NAMESPACE}
 stringData:
-  redis-url: "${redis_url}"
+${redis_secret_entry}
   postgresql-url: "${postgresql_url}"
   inference-api-key: "dummy-api-key"
-  s3-secret-access-key: "${MINIO_ROOT_PASSWORD}"
+  s3-secret-access-key: "${SEAWEEDFS_SECRET_KEY}"
 EOF
     log "Secret '${SECRET_NAME}' created."
 }
@@ -233,12 +251,14 @@ main() {
     kubectl create namespace "${NAMESPACE}" 2>/dev/null || true
 
     install_postgresql
-    install_redis
+    if [ "${INSTALL_REDIS}" = true ]; then
+        install_redis
+    fi
 
     if [ "${FILE_CLIENT_TYPE}" = "fs" ]; then
         create_pvc
     else
-        install_minio
+        install_seaweedfs
     fi
 
     create_secret
@@ -247,11 +267,13 @@ main() {
     log "Prerequisites ready:"
     echo "  Namespace:    ${NAMESPACE}"
     echo "  PostgreSQL:   ${POSTGRESQL_RELEASE}.${NAMESPACE}.svc.cluster.local:5432/batch"
-    echo "  Redis:        ${REDIS_RELEASE}-master.${NAMESPACE}.svc.cluster.local:6379"
+    if [ "${INSTALL_REDIS}" = true ]; then
+        echo "  Redis:        ${REDIS_RELEASE}-master.${NAMESPACE}.svc.cluster.local:6379"
+    fi
     if [ "${FILE_CLIENT_TYPE}" = "fs" ]; then
         echo "  File (PVC):   ${FILES_PVC_NAME}"
     else
-        echo "  MinIO (S3):   ${MINIO_RELEASE}.${NAMESPACE}.svc.cluster.local:9000 (bucket: ${MINIO_BUCKET})"
+        echo "  SeaweedFS (S3): ${SEAWEEDFS_RELEASE}.${NAMESPACE}.svc.cluster.local:8333 (bucket: ${SEAWEEDFS_BUCKET})"
     fi
     echo "  Secret:       ${SECRET_NAME}"
 }

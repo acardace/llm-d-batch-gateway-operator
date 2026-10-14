@@ -154,7 +154,12 @@ detect_file_storage_type() {
 }
 
 install_prereqs() {
+    local install_redis=false
+    if [[ "${DEV_PROFILE}" == async* ]]; then
+        install_redis=true
+    fi
     FILE_CLIENT_TYPE="$(detect_file_storage_type)" \
+        INSTALL_REDIS="${install_redis}" \
         NAMESPACE="${NAMESPACE}" bash "${SCRIPT_DIR}/setup-prereqs.sh"
 }
 

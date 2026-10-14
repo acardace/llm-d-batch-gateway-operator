@@ -10,8 +10,8 @@ spec:
     s3:
       bucket: llm-d-batch-gateway
       region: us-east-1
-      endpoint: http://minio.default.svc.cluster.local:9000
-      accessKeyId: minioadmin
+      endpoint: http://seaweedfs.default.svc.cluster.local:8333
+      accessKeyId: seaweedfsadmin
       usePathStyle: true
       autoCreateBucket: true
   apiServer:
@@ -47,5 +47,4 @@ spec:
         gateType: local-max-concurrency
         gateParams:
           limit: "2"
-
 

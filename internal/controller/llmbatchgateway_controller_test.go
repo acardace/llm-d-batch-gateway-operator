@@ -704,49 +704,11 @@ func TestReconcile(t *testing.T) {
 		assertResourceValue(t, "apiserver limits.memory", res.Limits, corev1.ResourceMemory, "512Mi")
 	})
 
-	t.Run("dbBackend change updates all ConfigMaps and workloads", func(t *testing.T) {
+	t.Run("unsupported dbBackend is rejected", func(t *testing.T) {
 		gw := newTestGateway("test-dbbackend")
-		if err := k8sClient.Create(ctx, gw); err != nil {
-			t.Fatalf("creating CR: %v", err)
-		}
-		t.Cleanup(func() { _ = k8sClient.Delete(ctx, gw) })
-
-		nn := types.NamespacedName{Name: gw.Name, Namespace: gw.Namespace}
-
-		_, err := reconciler.Reconcile(ctx, reconcile.Request{NamespacedName: nn})
-		if err != nil {
-			t.Fatalf("first Reconcile() error: %v", err)
-		}
-
-		checksumsBefore := map[string]string{}
-		for _, component := range []string{"apiserver", "gc"} {
-			d := findOwnedDeployment(ctx, t, gw, component)
-			checksumsBefore[component] = d.Spec.Template.Annotations["checksum/config"]
-		}
-		procBefore := findOwnedProcessorStatefulSet(ctx, t, gw)
-		checksumsBefore["processor"] = procBefore.Spec.Template.Annotations["checksum/config"]
-
-		if err := k8sClient.Get(ctx, nn, gw); err != nil {
-			t.Fatalf("getting CR for update: %v", err)
-		}
 		gw.Spec.DBBackend = "redis"
-		if err := k8sClient.Update(ctx, gw); err != nil {
-			t.Fatalf("updating CR: %v", err)
-		}
-
-		_, err = reconciler.Reconcile(ctx, reconcile.Request{NamespacedName: nn})
-		if err != nil {
-			t.Fatalf("second Reconcile() error: %v", err)
-		}
-
-		for _, component := range []string{"apiserver", "processor", "gc"} {
-			cm := getOwnedConfigMap(ctx, t, gw, component)
-			assertConfigMapContains(t, cm, `type: "redis"`)
-
-			after := workloadConfigChecksum(ctx, t, gw, component)
-			if after == checksumsBefore[component] {
-				t.Errorf("%s pod template not updated after dbBackend change", component)
-			}
+		if err := validateSpec(gw); err == nil || !strings.Contains(err.Error(), "only \"postgresql\" is supported") {
+			t.Fatalf("validateSpec() error = %v, want PostgreSQL-only error", err)
 		}
 	})
 
