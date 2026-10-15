@@ -18,7 +18,7 @@ func specToBatchHelmValues(gw *batchv1alpha1.LLMBatchGateway, secretName string,
 	// --- Global ---
 	dbType := gw.Spec.DBBackend
 	if dbType == "" {
-		dbType = "postgresql"
+		dbType = dbBackendPostgreSQL
 	}
 	dbClient := map[string]any{
 		"type": dbType,

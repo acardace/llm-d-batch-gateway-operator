@@ -12,6 +12,8 @@ import (
 	tlspkg "github.com/opendatahub-io/llm-d-batch-gateway-operator/internal/tls"
 )
 
+const classifyEndpoint = "/v1/classify"
+
 // testSecretName returns the secret name for use in tests, simulating what
 // resolveSecret returns in the same-namespace case.
 func testSecretName(gw *batchv1alpha1.LLMBatchGateway) string {
@@ -110,8 +112,8 @@ func TestSpecToHelmValues(t *testing.T) {
 			SecretRef: corev1.SecretReference{
 				Name: "my-secret",
 			},
-			DBBackend:      "postgresql",
-			ExtraEndpoints: []string{"/v1/classify"},
+			DBBackend:      dbBackendPostgreSQL,
+			ExtraEndpoints: []string{classifyEndpoint},
 			FileStorage: &batchv1alpha1.FileStorageSpec{
 				S3: &batchv1alpha1.S3StorageSpec{
 					Region:   "us-east-1",
@@ -160,8 +162,8 @@ func TestSpecToHelmValues(t *testing.T) {
 	t.Run("global db client type", func(t *testing.T) {
 		global := vals["global"].(map[string]interface{})
 		dbClient := global["dbClient"].(map[string]interface{})
-		if got := dbClient["type"]; got != "postgresql" {
-			t.Errorf("dbClient.type = %v, want %q", got, "postgresql")
+		if got := dbClient["type"]; got != dbBackendPostgreSQL {
+			t.Errorf("dbClient.type = %v, want %q", got, dbBackendPostgreSQL)
 		}
 	})
 
@@ -176,7 +178,7 @@ func TestSpecToHelmValues(t *testing.T) {
 	t.Run("global extra endpoints", func(t *testing.T) {
 		global := vals["global"].(map[string]interface{})
 		endpoints := global["extraEndpoints"].([]interface{})
-		if len(endpoints) != 1 || endpoints[0] != "/v1/classify" {
+		if len(endpoints) != 1 || endpoints[0] != classifyEndpoint {
 			t.Errorf("global.extraEndpoints = %v, want [/v1/classify]", endpoints)
 		}
 	})
@@ -822,7 +824,7 @@ func TestSpecToHelmValues_APIServerConfig(t *testing.T) {
 		BatchAPI: &batchv1alpha1.BatchAPIConfig{
 			EventTTLSeconds:    3600,
 			PassThroughHeaders: []string{"X-Request-ID", "Authorization"},
-			ExtraEndpoints:     []string{"/v1/classify"},
+			ExtraEndpoints:     []string{classifyEndpoint},
 		},
 		FileAPI: &batchv1alpha1.FileAPIConfig{
 			DefaultExpirationSeconds: 86400,
@@ -863,7 +865,7 @@ func TestSpecToHelmValues_APIServerConfig(t *testing.T) {
 	if len(headers) != 2 || headers[0] != "X-Request-ID" {
 		t.Errorf("passThroughHeaders = %v", headers)
 	}
-	if endpoints := batchAPI["extraEndpoints"].([]interface{}); len(endpoints) != 1 || endpoints[0] != "/v1/classify" {
+	if endpoints := batchAPI["extraEndpoints"].([]interface{}); len(endpoints) != 1 || endpoints[0] != classifyEndpoint {
 		t.Errorf("batchAPI.extraEndpoints = %v, want [/v1/classify]", endpoints)
 	}
 
@@ -894,7 +896,7 @@ func TestSpecToHelmValues_ProcessorConfig(t *testing.T) {
 			Recovery:    4,
 		},
 		InputFileDiskBudgetPercent:     20,
-		ExtraEndpoints:                 []string{"/v1/classify"},
+		ExtraEndpoints:                 []string{classifyEndpoint},
 		DefaultOutputExpirationSeconds: 7200,
 		ProgressUpdateInterval:         "30s",
 		EnablePprof:                    true,
@@ -937,7 +939,7 @@ func TestSpecToHelmValues_ProcessorConfig(t *testing.T) {
 	if got := config["inputFileDiskBudgetPercent"]; got != int64(20) {
 		t.Errorf("inputFileDiskBudgetPercent = %v, want 20", got)
 	}
-	if endpoints := config["extraEndpoints"].([]interface{}); len(endpoints) != 1 || endpoints[0] != "/v1/classify" {
+	if endpoints := config["extraEndpoints"].([]interface{}); len(endpoints) != 1 || endpoints[0] != classifyEndpoint {
 		t.Errorf("processor.extraEndpoints = %v, want [/v1/classify]", endpoints)
 	}
 	if got := config["enablePprof"]; got != true {
@@ -1380,7 +1382,7 @@ func minimalGateway() *batchv1alpha1.LLMBatchGateway {
 			SecretRef: corev1.SecretReference{
 				Name: "batch-gateway-secrets",
 			},
-			DBBackend: "postgresql",
+			DBBackend: dbBackendPostgreSQL,
 			FileStorage: &batchv1alpha1.FileStorageSpec{
 				S3: &batchv1alpha1.S3StorageSpec{
 					Region:   "us-east-1",

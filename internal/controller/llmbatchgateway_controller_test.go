@@ -33,7 +33,7 @@ func newTestGateway(name string) *batchv1alpha1.LLMBatchGateway {
 		},
 		Spec: batchv1alpha1.LLMBatchGatewaySpec{
 			SecretRef: corev1.SecretReference{Name: "test-secrets"},
-			DBBackend: "postgresql",
+			DBBackend: dbBackendPostgreSQL,
 			FileStorage: &batchv1alpha1.FileStorageSpec{
 				S3: &batchv1alpha1.S3StorageSpec{
 					Region:   "us-east-1",
@@ -1229,16 +1229,6 @@ func findOwnedProcessorStatefulSet(ctx context.Context, t *testing.T, gw *batchv
 	}
 	t.Fatalf("no processor statefulset found owned by %s", gw.Name)
 	return nil
-}
-
-func workloadConfigChecksum(ctx context.Context, t *testing.T, gw *batchv1alpha1.LLMBatchGateway, component string) string {
-	t.Helper()
-	if component == componentProcessor {
-		ss := findOwnedProcessorStatefulSet(ctx, t, gw)
-		return ss.Spec.Template.Annotations["checksum/config"]
-	}
-	d := findOwnedDeployment(ctx, t, gw, component)
-	return d.Spec.Template.Annotations["checksum/config"]
 }
 
 // assertProcessorStatefulSetReplicas verifies that the processor StatefulSet
