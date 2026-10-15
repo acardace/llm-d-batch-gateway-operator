@@ -333,8 +333,12 @@ func (in *BatchAPIConfig) DeepCopyInto(out *BatchAPIConfig) {
 	}
 	if in.ExtraEndpoints != nil {
 		in, out := &in.ExtraEndpoints, &out.ExtraEndpoints
-		*out = make([]string, len(*in))
-		copy(*out, *in)
+		*out = new([]string)
+		if **in != nil {
+			in, out := *in, *out
+			*out = make([]string, len(*in))
+			copy(*out, *in)
+		}
 	}
 }
 
@@ -855,8 +859,12 @@ func (in *ProcessorConfigSpec) DeepCopyInto(out *ProcessorConfigSpec) {
 	*out = *in
 	if in.ExtraEndpoints != nil {
 		in, out := &in.ExtraEndpoints, &out.ExtraEndpoints
-		*out = make([]string, len(*in))
-		copy(*out, *in)
+		*out = new([]string)
+		if **in != nil {
+			in, out := *in, *out
+			*out = make([]string, len(*in))
+			copy(*out, *in)
+		}
 	}
 	if in.Concurrency != nil {
 		in, out := &in.Concurrency, &out.Concurrency

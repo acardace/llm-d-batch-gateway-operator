@@ -419,7 +419,7 @@ func apiServerConfigToMap(cfg *batchv1alpha1.APIServerConfigSpec) map[string]int
 			ba["passThroughHeaders"] = toInterfaceSlice(cfg.BatchAPI.PassThroughHeaders)
 		}
 		if cfg.BatchAPI.ExtraEndpoints != nil {
-			ba["extraEndpoints"] = toInterfaceSlice(cfg.BatchAPI.ExtraEndpoints)
+			ba["extraEndpoints"] = toInterfaceSlice(*cfg.BatchAPI.ExtraEndpoints)
 		}
 		if len(ba) > 0 {
 			m["batchAPI"] = ba
@@ -454,7 +454,7 @@ func mergeProcessorConfig(m map[string]interface{}, cfg *batchv1alpha1.Processor
 		m["inputFileDiskBudgetPercent"] = int64(cfg.InputFileDiskBudgetPercent)
 	}
 	if cfg.ExtraEndpoints != nil {
-		m["extraEndpoints"] = toInterfaceSlice(cfg.ExtraEndpoints)
+		m["extraEndpoints"] = toInterfaceSlice(*cfg.ExtraEndpoints)
 	}
 	if cfg.Concurrency != nil {
 		concurrency := map[string]interface{}{}

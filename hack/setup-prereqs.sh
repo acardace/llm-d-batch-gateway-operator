@@ -8,8 +8,8 @@ set -euo pipefail
 # Run this before creating a LLMBatchGateway CR.
 #
 # Usage:
-#   ./hack/setup-prereqs.sh                    # install in batch-api namespace
-#   NAMESPACE=my-ns ./hack/setup-prereqs.sh    # install in custom namespace
+#   SEAWEEDFS_ACCESS_KEY=... SEAWEEDFS_SECRET_KEY=... ./hack/setup-prereqs.sh
+#   NAMESPACE=my-ns SEAWEEDFS_ACCESS_KEY=... SEAWEEDFS_SECRET_KEY=... ./hack/setup-prereqs.sh
 #   INSTALL_REDIS=true ./hack/setup-prereqs.sh  # also install Redis for async dispatch
 
 # ── Configuration ────────────────────────────────────────────────────────────
@@ -23,8 +23,8 @@ REDIS_RELEASE="${REDIS_RELEASE:-redis}"
 INSTALL_REDIS="${INSTALL_REDIS:-false}"
 
 SEAWEEDFS_RELEASE="${SEAWEEDFS_RELEASE:-seaweedfs}"
-SEAWEEDFS_ACCESS_KEY="${SEAWEEDFS_ACCESS_KEY:-seaweedfsadmin}"
-SEAWEEDFS_SECRET_KEY="${SEAWEEDFS_SECRET_KEY:-seaweedfsadmin}"
+SEAWEEDFS_ACCESS_KEY="${SEAWEEDFS_ACCESS_KEY:-}"
+SEAWEEDFS_SECRET_KEY="${SEAWEEDFS_SECRET_KEY:-}"
 SEAWEEDFS_BUCKET="${SEAWEEDFS_BUCKET:-batch-gateway}"
 
 FILE_CLIENT_TYPE="${FILE_CLIENT_TYPE:-s3}"
@@ -44,6 +44,18 @@ log()  { echo -e "${GREEN}[INFO]${NC}  $*"; }
 step() { echo -e "${BLUE}[STEP]${NC}  $*"; }
 warn() { echo -e "${YELLOW}[WARN]${NC}  $*" >&2; }
 die()  { echo -e "${RED}[ERROR]${NC} $*" >&2; exit 1; }
+
+validate_seaweedfs_settings() {
+    if [ "${FILE_CLIENT_TYPE}" = "fs" ]; then
+        return
+    fi
+    [[ "${SEAWEEDFS_ACCESS_KEY}" =~ ^[A-Za-z0-9._-]{1,128}$ ]] || \
+        die "SEAWEEDFS_ACCESS_KEY must contain 1-128 letters, digits, dots, underscores, or hyphens"
+    [[ "${SEAWEEDFS_SECRET_KEY}" =~ ^[A-Za-z0-9._-]{1,256}$ ]] || \
+        die "SEAWEEDFS_SECRET_KEY must contain 1-256 letters, digits, dots, underscores, or hyphens"
+    [[ "${SEAWEEDFS_BUCKET}" =~ ^[a-z0-9][a-z0-9.-]{1,61}[a-z0-9]$ ]] || \
+        die "SEAWEEDFS_BUCKET must be a 3-63 character lowercase S3 bucket name"
+}
 
 wait_for_deployment() {
     local name="$1" ns="$2" timeout="${3:-180s}"
@@ -95,10 +107,7 @@ install_redis() {
 
 install_seaweedfs() {
     step "Installing SeaweedFS..."
-    if kubectl get deployment "${SEAWEEDFS_RELEASE}" -n "${NAMESPACE}" &>/dev/null; then
-        log "SeaweedFS already exists. Skipping deployment creation."
-    else
-        kubectl apply -f - <<EOF
+    kubectl apply -f - <<EOF
 apiVersion: apps/v1
 kind: Deployment
 metadata:
@@ -160,7 +169,6 @@ spec:
     port: 8333
     targetPort: 8333
 EOF
-    fi
 
     wait_for_deployment "${SEAWEEDFS_RELEASE}" "${NAMESPACE}"
 
@@ -223,9 +231,13 @@ create_secret() {
 
     local postgresql_url="postgresql://postgres:${POSTGRESQL_PASSWORD}@${POSTGRESQL_RELEASE}.${NAMESPACE}.svc.cluster.local:5432/batch?sslmode=disable"
     local redis_secret_entry=""
+    local s3_secret_entry=""
     if [ "${INSTALL_REDIS}" = true ]; then
         local redis_url="redis://${REDIS_RELEASE}-master.${NAMESPACE}.svc.cluster.local:6379/0"
         redis_secret_entry="  redis-url: \"${redis_url}\""
+    fi
+    if [ "${FILE_CLIENT_TYPE}" = "s3" ]; then
+        s3_secret_entry="  s3-secret-access-key: \"${SEAWEEDFS_SECRET_KEY}\""
     fi
 
     kubectl apply -f - <<EOF
@@ -238,7 +250,7 @@ stringData:
 ${redis_secret_entry}
   postgresql-url: "${postgresql_url}"
   inference-api-key: "dummy-api-key"
-  s3-secret-access-key: "${SEAWEEDFS_SECRET_KEY}"
+${s3_secret_entry}
 EOF
     log "Secret '${SECRET_NAME}' created."
 }
@@ -247,6 +259,8 @@ EOF
 
 main() {
     step "Setting up prerequisites for LLMBatchGateway in ${NAMESPACE} (file storage: ${FILE_CLIENT_TYPE})"
+
+    validate_seaweedfs_settings
 
     kubectl create namespace "${NAMESPACE}" 2>/dev/null || true
 

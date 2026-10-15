@@ -280,10 +280,11 @@ type BatchAPIConfig struct {
 	PassThroughHeaders []string `json:"passThroughHeaders,omitempty"`
 
 	// ExtraEndpoints overrides spec.extraEndpoints for the API server.
-	// An explicit empty list disables deployment-specific endpoints for the API server.
+	// Leave unset to inherit spec.extraEndpoints; an explicit empty list disables
+	// deployment-specific endpoints for the API server.
 	// +kubebuilder:validation:MaxItems=32
 	// +kubebuilder:validation:items:MaxLength=2048
-	ExtraEndpoints []string `json:"extraEndpoints,omitempty"`
+	ExtraEndpoints *[]string `json:"extraEndpoints,omitempty"`
 }
 
 // FileAPIConfig configures the file upload/download API behaviour.
@@ -468,10 +469,11 @@ type ProcessorConfigSpec struct {
 	InputFileDiskBudgetPercent int32 `json:"inputFileDiskBudgetPercent,omitempty"`
 
 	// ExtraEndpoints overrides spec.extraEndpoints for the processor.
-	// An explicit empty list disables deployment-specific endpoints for the processor.
+	// Leave unset to inherit spec.extraEndpoints; an explicit empty list disables
+	// deployment-specific endpoints for the processor.
 	// +kubebuilder:validation:MaxItems=32
 	// +kubebuilder:validation:items:MaxLength=2048
-	ExtraEndpoints []string `json:"extraEndpoints,omitempty"`
+	ExtraEndpoints *[]string `json:"extraEndpoints,omitempty"`
 
 	// Concurrency groups all dispatch-rate and concurrency control knobs.
 	Concurrency *ConcurrencyConfig `json:"concurrency,omitempty"`

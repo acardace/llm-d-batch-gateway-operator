@@ -11,7 +11,8 @@ spec:
       bucket: llm-d-batch-gateway
       region: us-east-1
       endpoint: http://seaweedfs.default.svc.cluster.local:8333
-      accessKeyId: seaweedfsadmin
+      # Set this to the SEAWEEDFS_ACCESS_KEY used by setup-prereqs.sh.
+      accessKeyId: replace-with-your-seaweedfs-access-key
       usePathStyle: true
       autoCreateBucket: true
   apiServer:
@@ -47,4 +48,3 @@ spec:
         gateType: local-max-concurrency
         gateParams:
           limit: "2"
-

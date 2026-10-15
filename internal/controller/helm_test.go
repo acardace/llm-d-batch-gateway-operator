@@ -824,7 +824,7 @@ func TestSpecToHelmValues_APIServerConfig(t *testing.T) {
 		BatchAPI: &batchv1alpha1.BatchAPIConfig{
 			EventTTLSeconds:    3600,
 			PassThroughHeaders: []string{"X-Request-ID", "Authorization"},
-			ExtraEndpoints:     []string{classifyEndpoint},
+			ExtraEndpoints:     ptr.To([]string{classifyEndpoint}),
 		},
 		FileAPI: &batchv1alpha1.FileAPIConfig{
 			DefaultExpirationSeconds: 86400,
@@ -896,7 +896,7 @@ func TestSpecToHelmValues_ProcessorConfig(t *testing.T) {
 			Recovery:    4,
 		},
 		InputFileDiskBudgetPercent:     20,
-		ExtraEndpoints:                 []string{classifyEndpoint},
+		ExtraEndpoints:                 ptr.To([]string{classifyEndpoint}),
 		DefaultOutputExpirationSeconds: 7200,
 		ProgressUpdateInterval:         "30s",
 		EnablePprof:                    true,
@@ -944,6 +944,36 @@ func TestSpecToHelmValues_ProcessorConfig(t *testing.T) {
 	}
 	if got := config["enablePprof"]; got != true {
 		t.Errorf("enablePprof = %v, want true", got)
+	}
+}
+
+func TestSpecToHelmValues_EmptyExtraEndpointsOverride(t *testing.T) {
+	gateway := minimalGateway()
+	gateway.Spec.ExtraEndpoints = []string{classifyEndpoint}
+	gateway.Spec.APIServer.Config = &batchv1alpha1.APIServerConfigSpec{
+		BatchAPI: &batchv1alpha1.BatchAPIConfig{
+			ExtraEndpoints: ptr.To([]string{}),
+		},
+	}
+	gateway.Spec.Processor.Config = &batchv1alpha1.ProcessorConfigSpec{
+		ExtraEndpoints: ptr.To([]string{}),
+	}
+
+	vals := specToBatchHelmValues(gateway, testSecretName(gateway), testImages(), tlspkg.ProfileValues{})
+
+	apiserver := vals["apiserver"].(map[string]interface{})
+	apiConfig := apiserver["config"].(map[string]interface{})
+	batchAPI := apiConfig["batchAPI"].(map[string]interface{})
+	apiEndpoints, ok := batchAPI["extraEndpoints"].([]interface{})
+	if !ok || len(apiEndpoints) != 0 {
+		t.Errorf("apiserver extraEndpoints = %v, want an explicit empty list", batchAPI["extraEndpoints"])
+	}
+
+	processor := vals["processor"].(map[string]interface{})
+	processorConfig := processor["config"].(map[string]interface{})
+	processorEndpoints, ok := processorConfig["extraEndpoints"].([]interface{})
+	if !ok || len(processorEndpoints) != 0 {
+		t.Errorf("processor extraEndpoints = %v, want an explicit empty list", processorConfig["extraEndpoints"])
 	}
 }
 

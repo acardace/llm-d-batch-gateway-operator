@@ -104,8 +104,15 @@ LLMBatchGateway requires PostgreSQL and S3-compatible storage. Async dispatch al
 
 ```bash
 export NAMESPACE=batch-api
+export SEAWEEDFS_ACCESS_KEY="batch-gateway-$(openssl rand -hex 16)"
+export SEAWEEDFS_SECRET_KEY="$(openssl rand -hex 32)"
 bash hack/setup-prereqs.sh
 ```
+
+Use unique values for `SEAWEEDFS_ACCESS_KEY` and `SEAWEEDFS_SECRET_KEY`. The
+setup script requires both values and stores the secret key in
+`batch-gateway-secrets`. For production, use credentials from a managed Secret
+and do not use the local SeaweedFS setup script.
 
 For async testing, install Redis as well:
 
@@ -141,7 +148,7 @@ spec:
     s3:
       region: us-east-1
       endpoint: http://seaweedfs.$NAMESPACE.svc.cluster.local:8333
-      accessKeyId: seaweedfsadmin
+      accessKeyId: ${SEAWEEDFS_ACCESS_KEY}
       usePathStyle: true
       autoCreateBucket: true
   apiServer:
@@ -189,7 +196,7 @@ spec:
   dbBackend: postgresql
   fileStorage:
     s3:
-      accessKeyId: seaweedfsadmin
+      accessKeyId: <generated-access-key>
       autoCreateBucket: true
       endpoint: http://seaweedfs.batch-api.svc.cluster.local:8333
       region: us-east-1

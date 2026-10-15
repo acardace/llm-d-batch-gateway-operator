@@ -29,6 +29,15 @@ GC_IMG="${GC_IMG:-$(param_image LLM_D_BATCH_GATEWAY_GC_IMAGE)}"
 ASYNC_IMG="${ASYNC_IMG:-$(param_image LLM_D_ASYNC_IMAGE)}"
 VLLM_SIM_IMG="${VLLM_SIM_IMG:-ghcr.io/llm-d/llm-d-inference-sim:latest}"
 
+random_hex() {
+    od -An -N16 -tx1 /dev/urandom | tr -d ' \n'
+}
+
+# Generate credentials for this local deployment unless the caller supplies them.
+# setup-prereqs.sh requires both values and applies them to SeaweedFS on every run.
+SEAWEEDFS_ACCESS_KEY="${SEAWEEDFS_ACCESS_KEY:-batch-gateway-$(random_hex)}"
+SEAWEEDFS_SECRET_KEY="${SEAWEEDFS_SECRET_KEY:-$(random_hex)}"
+
 # Port configuration (matches batch-gateway defaults)
 APISERVER_NODE_PORT="${APISERVER_NODE_PORT:-30080}"
 APISERVER_OBS_NODE_PORT="${APISERVER_OBS_NODE_PORT:-30081}"
@@ -160,7 +169,10 @@ install_prereqs() {
     fi
     FILE_CLIENT_TYPE="$(detect_file_storage_type)" \
         INSTALL_REDIS="${install_redis}" \
-        NAMESPACE="${NAMESPACE}" bash "${SCRIPT_DIR}/setup-prereqs.sh"
+        NAMESPACE="${NAMESPACE}" \
+        SEAWEEDFS_ACCESS_KEY="${SEAWEEDFS_ACCESS_KEY}" \
+        SEAWEEDFS_SECRET_KEY="${SEAWEEDFS_SECRET_KEY}" \
+        bash "${SCRIPT_DIR}/setup-prereqs.sh"
 }
 
 install_gateway_api_crds() {
@@ -459,7 +471,13 @@ apply_and_verify_cr() {
     if [ ! -f "${cr_file}" ]; then
         die "Dev profile CR not found: ${cr_file} (DEV_PROFILE=${DEV_PROFILE})"
     fi
-    kubectl apply -f "${cr_file}" -n "${NAMESPACE}"
+    if [[ "$(detect_file_storage_type)" == "s3" ]]; then
+        SEAWEEDFS_ACCESS_KEY="${SEAWEEDFS_ACCESS_KEY}" \
+            yq eval '.spec.fileStorage.s3.accessKeyId = strenv(SEAWEEDFS_ACCESS_KEY)' "${cr_file}" | \
+            kubectl apply -f - -n "${NAMESPACE}"
+    else
+        kubectl apply -f "${cr_file}" -n "${NAMESPACE}"
+    fi
 
     local cr_name
     cr_name=$(yq '.metadata.name' "$cr_file")
