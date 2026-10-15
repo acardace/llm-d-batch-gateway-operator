@@ -16,9 +16,9 @@ GATEWAY_API_VERSION="${GATEWAY_API_VERSION:-}"
 PROMETHEUS_OPERATOR_VERSION="${PROMETHEUS_OPERATOR_VERSION:-}"
 
 # Dev profile selects which config/samples/dev-<profile>.yaml CR to apply.
-# Available: sync (default), async, async-gate-redis, async-gate-prometheus-query,
+# Available: async (default), sync, async-gate-redis, async-gate-prometheus-query,
 #            async-gate-prometheus-budget, async-gate-endpoint-scrape.
-DEV_PROFILE="${DEV_PROFILE:-sync}"
+DEV_PROFILE="${DEV_PROFILE:-async}"
 
 # read from params.env if you wanna test a different image, go update params.env
 PARAMS_ENV="${OPERATOR_DIR}/config/base/params.env"

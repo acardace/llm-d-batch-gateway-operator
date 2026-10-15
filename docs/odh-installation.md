@@ -2,6 +2,8 @@
 
 Deploy LLM Batch Gateway through the ODH platform on OpenShift.
 
+For upgrades, read the [Async Dispatch and Core Storage Migration](async-default-migration.md) guide first. It covers the separate PostgreSQL migration for Batch Gateway metadata and the Redis requirement for async queues.
+
 ## Architecture
 
 ```

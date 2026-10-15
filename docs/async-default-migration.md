@@ -1,10 +1,37 @@
-# Async Dispatch Default Migration
+# Async Dispatch and Core Storage Migration
 
 ## Scope
 
-This guide applies to the OpenDataHub downstream `LLMBatchGateway` operator when upgrading to a release where new resources default to asynchronous dispatch.
+This guide applies to the OpenDataHub downstream `LLMBatchGateway` operator when upgrading to a release where new resources default to asynchronous dispatch and core Batch Gateway storage uses PostgreSQL.
 
 The upstream `llm-d` default is unchanged.
+
+## Core Storage Migration
+
+This release changes only the Batch Gateway core storage backend:
+
+```text
+Batch metadata and job state: Redis/Valkey -> PostgreSQL
+Async request/result queues:  Redis remains required for async dispatch
+```
+
+These are separate uses of Redis. PostgreSQL stores Batch Gateway metadata and job state. Redis under `processor.asyncConfig` is still used by the async processor for request/result queues and dispatch gates.
+
+Existing resources with `dbBackend: redis`, `dbBackend: valkey`, or the old top-level `spec.redis` field fail reconciliation after the operator upgrade. The CRD now accepts only `dbBackend: postgresql`.
+
+The operator does not migrate Redis/Valkey data to PostgreSQL automatically. For each existing resource that uses Redis or Valkey for core Batch Gateway storage, complete the following steps before upgrading the operator or its CRD:
+
+1. Deploy PostgreSQL and create the Batch Gateway database.
+2. Migrate any required Batch Gateway metadata and job state using your approved database migration process.
+3. Update the referenced Secret with a `postgresql-url` entry.
+4. Set `spec.dbBackend: postgresql` and remove the old top-level `spec.redis` field.
+5. Keep `redis-url` and deploy Redis only when the resource uses async dispatch.
+
+Do not treat this as only a CR field change. Starting PostgreSQL without migrating required data creates an empty Batch Gateway database and can lose access to existing Batches.
+
+If a resource already uses `dbBackend: postgresql`, no core storage migration is needed; remove any unused top-level `spec.redis` field before upgrading. Do not move that field into `processor.asyncConfig`; async Redis connection and queue settings are configured separately.
+
+If Redis is used only by `processor.asyncConfig`, keep it. That async Redis setup does not need to move to PostgreSQL.
 
 ## Resulting Behavior
 

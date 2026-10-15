@@ -5,7 +5,7 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 OPERATOR_DIR="$(cd "${SCRIPT_DIR}/.." && pwd)"
 
 NAMESPACE="${NAMESPACE:-default}"
-DEV_PROFILE="${DEV_PROFILE:-sync}"
+DEV_PROFILE="${DEV_PROFILE:-async}"
 SEAWEEDFS_RELEASE="${SEAWEEDFS_RELEASE:-seaweedfs}"
 
 log()  { echo "  [INFO]  $*"; }

@@ -59,8 +59,8 @@ type LLMBatchGatewaySpec struct {
 	SecretRef corev1.SecretReference `json:"secretRef"`
 
 	// DBBackend selects the database backend used for job state storage.
-	// The batch-gateway control plane supports PostgreSQL. Redis is used only
-	// by the optional async processor.
+	// The batch-gateway control plane uses PostgreSQL. Redis is used by the
+	// async processor when dispatchMode is "async"; async is the default.
 	// +kubebuilder:validation:Enum=postgresql
 	// +kubebuilder:default=postgresql
 	DBBackend string `json:"dbBackend,omitempty"`
