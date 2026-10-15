@@ -14,6 +14,7 @@ OPERATOR_IMG="${OPERATOR_IMG:-localhost/llm-d-batch-gateway-operator:dev}"
 
 GATEWAY_API_VERSION="${GATEWAY_API_VERSION:-}"
 PROMETHEUS_OPERATOR_VERSION="${PROMETHEUS_OPERATOR_VERSION:-}"
+SEAWEEDFS_RELEASE="${SEAWEEDFS_RELEASE:-seaweedfs}"
 
 # Dev profile selects which config/samples/dev-<profile>.yaml CR to apply.
 # Available: async (default), sync, async-gate-redis, async-gate-prometheus-query,
@@ -461,6 +462,19 @@ deploy_operator() {
 
 # ── Wait & Verify ────────────────────────────────────────────────────────────
 
+# Render the dev CR to stdout. For S3 profiles, point file storage at the SeaweedFS
+# Service that setup-prereqs.sh installs in ${NAMESPACE}, using the generated access key.
+render_dev_cr() {
+    local cr_file="$1"
+    if [[ "$(detect_file_storage_type)" != "s3" ]]; then
+        cat "${cr_file}"
+        return
+    fi
+    SEAWEEDFS_ACCESS_KEY="${SEAWEEDFS_ACCESS_KEY}" \
+        SEAWEEDFS_ENDPOINT="http://${SEAWEEDFS_RELEASE}.${NAMESPACE}.svc.cluster.local:8333" \
+        yq eval '.spec.fileStorage.s3.accessKeyId = strenv(SEAWEEDFS_ACCESS_KEY) | .spec.fileStorage.s3.endpoint = strenv(SEAWEEDFS_ENDPOINT)' "${cr_file}"
+}
+
 apply_and_verify_cr() {
     cd "${OPERATOR_DIR}"
 
@@ -471,13 +485,7 @@ apply_and_verify_cr() {
     if [ ! -f "${cr_file}" ]; then
         die "Dev profile CR not found: ${cr_file} (DEV_PROFILE=${DEV_PROFILE})"
     fi
-    if [[ "$(detect_file_storage_type)" == "s3" ]]; then
-        SEAWEEDFS_ACCESS_KEY="${SEAWEEDFS_ACCESS_KEY}" \
-            yq eval '.spec.fileStorage.s3.accessKeyId = strenv(SEAWEEDFS_ACCESS_KEY)' "${cr_file}" | \
-            kubectl apply -f - -n "${NAMESPACE}"
-    else
-        kubectl apply -f "${cr_file}" -n "${NAMESPACE}"
-    fi
+    render_dev_cr "${cr_file}" | kubectl apply -f - -n "${NAMESPACE}"
 
     local cr_name
     cr_name=$(yq '.metadata.name' "$cr_file")
@@ -682,4 +690,6 @@ main() {
     print_status
 }
 
-main "$@"
+if [[ "${BASH_SOURCE[0]}" == "${0}" ]]; then
+    main "$@"
+fi
