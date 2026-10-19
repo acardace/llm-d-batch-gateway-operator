@@ -141,8 +141,10 @@ TEST_RUN ?= TestE2E/Batches/Lifecycle
 test-e2e-batch-gateway: fetch-batch-gateway
 	bash hack/test-e2e-batch-gateway.sh
 
-.PHONY: test-e2e-operator
-test-e2e-operator: dev-deploy
+.PHONY: test-e2e-operator test-e2e-operator-no-deploy
+test-e2e-operator: dev-deploy test-e2e-operator-no-deploy
+
+test-e2e-operator-no-deploy:
 	cd test/e2e && TEST_CR_NAME=batch-gateway-dev go test -v -count=1 -timeout 5m ./...
 
 .PHONY: fetch-batch-gateway
@@ -171,12 +173,15 @@ fetch-llm-d-async: ## Sparse-checkout only charts/llm-d-async from llm-d-async a
 		git -C "$(LLM_D_ASYNC_DIR)" sparse-checkout set --no-cone 'charts/llm-d-async/*' && \
 		git -C "$(LLM_D_ASYNC_DIR)" fetch -q --depth 1 "$(LLM_D_ASYNC_REPO)" "$(LLM_D_ASYNC_REF)" && \
 		git -C "$(LLM_D_ASYNC_DIR)" checkout -q FETCH_HEAD; \
-	elif [ "$$(git -C "$(LLM_D_ASYNC_DIR)" rev-parse HEAD)" = "$(LLM_D_ASYNC_REF)" ]; then \
-		echo "llm-d-async already at $(LLM_D_ASYNC_REF)"; \
 	else \
-		echo "Updating llm-d-async to $(LLM_D_ASYNC_REF) from $(LLM_D_ASYNC_REPO)"; \
-		git -C "$(LLM_D_ASYNC_DIR)" fetch -q --depth 1 "$(LLM_D_ASYNC_REPO)" "$(LLM_D_ASYNC_REF)" && \
-		git -C "$(LLM_D_ASYNC_DIR)" checkout -q FETCH_HEAD; \
+		git -C "$(LLM_D_ASYNC_DIR)" sparse-checkout set --no-cone 'charts/llm-d-async/*' && \
+		if [ "$$(git -C "$(LLM_D_ASYNC_DIR)" rev-parse HEAD)" = "$(LLM_D_ASYNC_REF)" ]; then \
+			echo "llm-d-async already at $(LLM_D_ASYNC_REF)"; \
+		else \
+			echo "Updating llm-d-async to $(LLM_D_ASYNC_REF) from $(LLM_D_ASYNC_REPO)"; \
+			git -C "$(LLM_D_ASYNC_DIR)" fetch -q --depth 1 "$(LLM_D_ASYNC_REPO)" "$(LLM_D_ASYNC_REF)" && \
+			git -C "$(LLM_D_ASYNC_DIR)" checkout -q FETCH_HEAD; \
+		fi; \
 	fi
 
 .PHONY: sync-prefetched-charts

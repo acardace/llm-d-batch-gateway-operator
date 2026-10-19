@@ -21,8 +21,9 @@ import (
 )
 
 const (
-	llmBatchGatewayKind = "LLMBatchGateway"
-	secretKind          = "Secret"
+	llmBatchGatewayKind     = "LLMBatchGateway"
+	secretKind              = "Secret"
+	testInferenceGatewayURL = "http://epp:8081"
 )
 
 func newTestGateway(name string) *batchv1alpha1.LLMBatchGateway {
@@ -970,7 +971,7 @@ func newTestAsyncGateway(name string) *batchv1alpha1.LLMBatchGateway {
 		DrainTimeout:      "2m",
 		ResultPollTimeout: "30s",
 		InferenceGateway: &batchv1alpha1.InferenceGatewaySpec{
-			URL: "http://epp:8081",
+			URL: testInferenceGatewayURL,
 		},
 		Redis: &batchv1alpha1.AsyncRedisSpec{},
 	}

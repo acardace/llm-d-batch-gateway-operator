@@ -59,6 +59,10 @@ func specToAsyncHelmValues(gw *batchv1alpha1.LLMBatchGateway, secretName string,
 	setIfNotEmpty(ap, "prometheusCacheTTL", ac.PrometheusCacheTTL)
 
 	if ac.Redis != nil {
+		gatewayURL := ""
+		if ac.InferenceGateway != nil {
+			gatewayURL = ac.InferenceGateway.URL
+		}
 		transportConfig := map[string]any{
 			"urlSecret": map[string]any{
 				"name": secretName,
@@ -82,7 +86,11 @@ func specToAsyncHelmValues(gw *batchv1alpha1.LLMBatchGateway, secretName string,
 					"queue_name": q.Name,
 				}
 				setIfNotEmpty(qm, "worker_pool_id", q.WorkerPoolID)
-				setIfNotEmpty(qm, "igw_base_url", q.IGWBaseURL)
+				queueGatewayURL := q.IGWBaseURL
+				if queueGatewayURL == "" {
+					queueGatewayURL = gatewayURL
+				}
+				setIfNotEmpty(qm, "igw_base_url", queueGatewayURL)
 				setIfNotEmpty(qm, "request_path_url", q.RequestPathURL)
 				setIfNotEmpty(qm, "gate_type", q.GateType)
 				if len(q.GateParams) > 0 {

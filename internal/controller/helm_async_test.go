@@ -17,7 +17,7 @@ func minimalAsyncGateway() *batchv1alpha1.LLMBatchGateway {
 		Concurrency:  &concurrency,
 		DrainTimeout: "2m",
 		InferenceGateway: &batchv1alpha1.InferenceGatewaySpec{
-			URL: "http://epp:8081",
+			URL: testInferenceGatewayURL,
 		},
 		Redis: &batchv1alpha1.AsyncRedisSpec{},
 	}
@@ -51,8 +51,8 @@ func TestSpecToAsyncHelmValues(t *testing.T) {
 	})
 
 	t.Run("igwBaseURL", func(t *testing.T) {
-		if got := ap["igwBaseURL"]; got != "http://epp:8081" {
-			t.Errorf("igwBaseURL = %v, want http://epp:8081", got)
+		if got := ap["igwBaseURL"]; got != testInferenceGatewayURL {
+			t.Errorf("igwBaseURL = %v, want %s", got, testInferenceGatewayURL)
 		}
 	})
 
@@ -88,8 +88,8 @@ func TestSpecToAsyncHelmValues(t *testing.T) {
 		if got := queue["queue_name"]; got != "request-sortedset" {
 			t.Errorf("transportConfig.queues[0].queue_name = %v, want request-sortedset", got)
 		}
-		if got := queue["igw_base_url"]; got != "http://epp:8081" {
-			t.Errorf("transportConfig.queues[0].igw_base_url = %v, want http://epp:8081", got)
+		if got := queue["igw_base_url"]; got != testInferenceGatewayURL {
+			t.Errorf("transportConfig.queues[0].igw_base_url = %v, want %s", got, testInferenceGatewayURL)
 		}
 		if _, ok := ap["redis"]; ok {
 			t.Error("ap.redis must not be set when using the transport surface")
@@ -131,6 +131,10 @@ func TestSpecToAsyncHelmValues_TransportQueues(t *testing.T) {
 			GateType:       "prometheus-budget",
 			GateParams:     map[string]string{"pool": "pool-a"},
 		},
+		{
+			Name:         "llm-d-async:requests:pool-b",
+			WorkerPoolID: "pool-b-workers",
+		},
 	}
 	gw.Spec.OTEL = &batchv1alpha1.OTELSpec{
 		Endpoint:     "http://jaeger:4317",
@@ -153,8 +157,8 @@ func TestSpecToAsyncHelmValues_TransportQueues(t *testing.T) {
 		t.Errorf("transportConfig.enable_tracing = %v, want true", got)
 	}
 	queues, ok := transportConfig["queues"].([]any)
-	if !ok || len(queues) != 1 {
-		t.Fatalf("transportConfig.queues = %v, want one queue", transportConfig["queues"])
+	if !ok || len(queues) != 2 {
+		t.Fatalf("transportConfig.queues = %v, want two queues", transportConfig["queues"])
 	}
 	queue, ok := queues[0].(map[string]any)
 	if !ok {
@@ -178,6 +182,13 @@ func TestSpecToAsyncHelmValues_TransportQueues(t *testing.T) {
 	}
 	if got := gateParams["pool"]; got != "pool-a" {
 		t.Errorf("gate_params.pool = %v, want pool-a", got)
+	}
+	inheritedQueue, ok := queues[1].(map[string]any)
+	if !ok {
+		t.Fatal("transportConfig.queues[1] is not a map")
+	}
+	if got := inheritedQueue["igw_base_url"]; got != testInferenceGatewayURL {
+		t.Errorf("transportConfig.queues[1].igw_base_url = %v, want %s", got, testInferenceGatewayURL)
 	}
 }
 

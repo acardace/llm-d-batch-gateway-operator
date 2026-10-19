@@ -101,7 +101,9 @@ if [[ "$dispatch_mode" == "async" ]]; then
     log "async_successful_requests_total before: $before_success"
 
     step "Running async dispatcher e2e tests (${TEST_RUN})..."
-    go test -v -count=1 -run "${TEST_RUN}" ./...
+    # The operator deploys the CR under CR_NAME; pass that release name to the
+    # batch-gateway E2E module so it finds the processor ConfigMap and pods.
+    TEST_HELM_RELEASE="${CR_NAME}" go test -v -count=1 -run "${TEST_RUN}" ./...
 
     step "Verifying requests went through llm-d-async..."
     after_success=$(get_async_metric "llm_d_async_async_successful_requests_total")
