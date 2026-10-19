@@ -30,6 +30,10 @@ spec:
     config:
       inputFileDiskBudgetPercent: 10
       progressUpdateInterval: 15s
+      resumable:
+        leaseDuration: 5m
+        finalizeConcurrency: 16
+        finalizeTimeout: 30m
       # Component-level override of spec.extraEndpoints.
       extraEndpoints:
       - /v1/classify

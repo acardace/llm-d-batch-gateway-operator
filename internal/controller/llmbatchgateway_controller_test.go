@@ -984,7 +984,7 @@ func TestReconcileAsync(t *testing.T) {
 	if err != nil {
 		t.Fatalf("NewHelmRenderer(batch) error: %v", err)
 	}
-	asyncHelmRenderer, err := NewHelmRenderer("../../llm-d-async/charts/async-processor", testImages(), tlspkg.ProfileValues{})
+	asyncHelmRenderer, err := NewHelmRenderer("../../llm-d-async/charts/llm-d-async", testImages(), tlspkg.ProfileValues{})
 	if err != nil {
 		t.Fatalf("NewHelmRenderer(async) error: %v", err)
 	}

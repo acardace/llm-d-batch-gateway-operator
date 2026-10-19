@@ -33,6 +33,14 @@ If a resource already uses `dbBackend: postgresql`, no core storage migration is
 
 If Redis is used only by `processor.asyncConfig`, keep it. That async Redis setup does not need to move to PostgreSQL.
 
+## Resumable Pipeline Upgrade
+
+This release runs async batches through the resumable pipeline. There is no `resumable.enabled` field; `spec.processor.dispatchMode` still selects the request transport.
+
+Rows written before the unified resumable pipeline cannot be resumed. Drain in-flight batches before upgrading. Completed and terminal batches are not affected.
+
+The pipeline supports multiple processor replicas. Tune lease renewal, finalization concurrency, and finalization timeout with `spec.processor.config.resumable`.
+
 ## Resulting Behavior
 
 ```text

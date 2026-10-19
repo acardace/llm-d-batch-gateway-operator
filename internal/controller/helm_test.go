@@ -895,6 +895,11 @@ func TestSpecToHelmValues_ProcessorConfig(t *testing.T) {
 			PerEndpoint: 16,
 			Recovery:    4,
 		},
+		Resumable: &batchv1alpha1.ResumableConfigSpec{
+			LeaseDuration:       "5m",
+			FinalizeConcurrency: 16,
+			FinalizeTimeout:     "30m",
+		},
 		InputFileDiskBudgetPercent:     20,
 		ExtraEndpoints:                 ptr.To([]string{classifyEndpoint}),
 		DefaultOutputExpirationSeconds: 7200,
@@ -922,6 +927,19 @@ func TestSpecToHelmValues_ProcessorConfig(t *testing.T) {
 	}
 	if got := concurrency["recovery"]; got != int64(4) {
 		t.Errorf("concurrency.recovery = %v, want 4", got)
+	}
+	resumable, ok := config["resumable"].(map[string]interface{})
+	if !ok {
+		t.Fatalf("resumable not found or wrong type: %T", config["resumable"])
+	}
+	if got := resumable["leaseDuration"]; got != "5m" {
+		t.Errorf("resumable.leaseDuration = %v, want 5m", got)
+	}
+	if got := resumable["finalizeConcurrency"]; got != int64(16) {
+		t.Errorf("resumable.finalizeConcurrency = %v, want 16", got)
+	}
+	if got := resumable["finalizeTimeout"]; got != "30m" {
+		t.Errorf("resumable.finalizeTimeout = %v, want 30m", got)
 	}
 	gwConfig, ok := config["globalInferenceGateway"].(map[string]interface{})
 	if !ok {

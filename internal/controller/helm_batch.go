@@ -487,6 +487,17 @@ func mergeProcessorConfig(m map[string]interface{}, cfg *batchv1alpha1.Processor
 			m["concurrency"] = concurrency
 		}
 	}
+	if cfg.Resumable != nil {
+		resumable := map[string]interface{}{}
+		setIfNotEmpty(resumable, "leaseDuration", cfg.Resumable.LeaseDuration)
+		if cfg.Resumable.FinalizeConcurrency != 0 {
+			resumable["finalizeConcurrency"] = int64(cfg.Resumable.FinalizeConcurrency)
+		}
+		setIfNotEmpty(resumable, "finalizeTimeout", cfg.Resumable.FinalizeTimeout)
+		if len(resumable) > 0 {
+			m["resumable"] = resumable
+		}
+	}
 	legacyObjective := cfg.InferenceObjective //nolint:staticcheck // deprecated field is honored on purpose
 	if legacyObjective != "" {
 		if gw, ok := m["globalInferenceGateway"].(map[string]any); ok {

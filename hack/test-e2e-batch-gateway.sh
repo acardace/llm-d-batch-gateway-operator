@@ -66,6 +66,16 @@ get_async_metric() {
     get_async_metrics | { grep "^${metric_name}" || true; } | awk '{sum+=$2} END {printf "%d", sum}'
 }
 
+get_async_transport_config() {
+    local deploy_json
+    deploy_json=$(kubectl get deployment "${CR_NAME}-async-processor" -n "${NAMESPACE}" -o json)
+    echo "$deploy_json" | jq -r '
+        .spec.template.spec.containers[0].args as $args |
+        ($args | index("--transport-config")) as $index |
+        if $index == null then "" else $args[$index + 1] end
+    '
+}
+
 # ── Detect dispatch mode from processor configmap ────────────────────────────
 
 dispatch_mode=$(kubectl get configmap -n "${NAMESPACE}" \
@@ -111,10 +121,8 @@ if [[ "$dispatch_mode" == "async" ]]; then
     fi
 
     # Verify gate budget if a gate type is configured
-    gate_type=""
-    gate_type=$(kubectl get deployment "${CR_NAME}-async-processor" -n "${NAMESPACE}" -o json \
-        | jq -r '.spec.template.spec.containers[0].args[]' \
-        | grep '^\[' | jq -r '.[0].gate_type // empty')
+    transport_config=$(get_async_transport_config)
+    gate_type=$(echo "$transport_config" | jq -r '.queues[0].gate_type // empty')
     if [ -n "$gate_type" ]; then
         budget_line=$(get_async_metrics | grep "^llm_d_async_async_dispatch_budget" | head -1)
         if [ -n "$budget_line" ]; then

@@ -6,6 +6,7 @@ import (
 	batchv1alpha1 "github.com/opendatahub-io/llm-d-batch-gateway-operator/api/v1alpha1"
 	tlspkg "github.com/opendatahub-io/llm-d-batch-gateway-operator/internal/tls"
 	corev1 "k8s.io/api/core/v1"
+	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
 )
 
 func minimalAsyncGateway() *batchv1alpha1.LLMBatchGateway {
@@ -62,15 +63,45 @@ func TestSpecToAsyncHelmValues(t *testing.T) {
 	})
 
 	t.Run("redis", func(t *testing.T) {
-		redis := ap["redis"].(map[string]any)
-		if got := redis["enabled"]; got != true {
-			t.Errorf("redis.enabled = %v, want true", got)
+		if got := ap["transport"]; got != "redis-sortedset" {
+			t.Errorf("transport = %v, want redis-sortedset", got)
 		}
-		if got := redis["secretName"]; got != testSecretName(gw) {
-			t.Errorf("redis.secretName = %v, want %s", got, testSecretName(gw))
+		transportConfig, ok := ap["transportConfig"].(map[string]any)
+		if !ok {
+			t.Fatal("ap.transportConfig missing or wrong type")
 		}
-		if got := redis["secretKey"]; got != "redis-url" {
-			t.Errorf("redis.secretKey = %v, want redis-url", got)
+		urlSecret, ok := transportConfig["urlSecret"].(map[string]any)
+		if !ok {
+			t.Fatal("ap.transportConfig.urlSecret missing or wrong type")
+		}
+		if got := urlSecret["name"]; got != testSecretName(gw) {
+			t.Errorf("transportConfig.urlSecret.name = %v, want %s", got, testSecretName(gw))
+		}
+		if got := urlSecret["key"]; got != "redis-url" {
+			t.Errorf("transportConfig.urlSecret.key = %v, want redis-url", got)
+		}
+		queues, ok := transportConfig["queues"].([]any)
+		if !ok || len(queues) != 1 {
+			t.Fatalf("transportConfig.queues = %v, want one queue", transportConfig["queues"])
+		}
+		queue := queues[0].(map[string]any)
+		if got := queue["queue_name"]; got != "request-sortedset" {
+			t.Errorf("transportConfig.queues[0].queue_name = %v, want request-sortedset", got)
+		}
+		if got := queue["igw_base_url"]; got != "http://epp:8081" {
+			t.Errorf("transportConfig.queues[0].igw_base_url = %v, want http://epp:8081", got)
+		}
+		if _, ok := ap["redis"]; ok {
+			t.Error("ap.redis must not be set when using the transport surface")
+		}
+		if _, ok := ap["messageQueueImpl"]; ok {
+			t.Error("ap.messageQueueImpl must not be set when using the transport surface")
+		}
+	})
+
+	t.Run("name override", func(t *testing.T) {
+		if got := vals["nameOverride"]; got != "async-processor" {
+			t.Errorf("nameOverride = %v, want async-processor", got)
 		}
 	})
 }
@@ -82,6 +113,71 @@ func TestSpecToAsyncHelmValues_NilAsyncConfig(t *testing.T) {
 
 	if len(vals) != 0 {
 		t.Errorf("expected empty map for nil AsyncConfig, got %v", vals)
+	}
+}
+
+func TestSpecToAsyncHelmValues_TransportQueues(t *testing.T) {
+	gw := minimalAsyncGateway()
+	pollIntervalMs := int32(500)
+	batchSize := int32(10)
+	gw.Spec.Processor.AsyncConfig.Redis.PollIntervalMs = &pollIntervalMs
+	gw.Spec.Processor.AsyncConfig.Redis.BatchSize = &batchSize
+	gw.Spec.Processor.AsyncConfig.Redis.QueuesConfig = []batchv1alpha1.AsyncQueueConfig{
+		{
+			Name:           "llm-d-async:requests:pool-a",
+			WorkerPoolID:   "pool-a-workers",
+			IGWBaseURL:     "http://epp-pool-a:8081",
+			RequestPathURL: "/v1/completions",
+			GateType:       "prometheus-budget",
+			GateParams:     map[string]string{"pool": "pool-a"},
+		},
+	}
+	gw.Spec.OTEL = &batchv1alpha1.OTELSpec{
+		Endpoint:     "http://jaeger:4317",
+		RedisTracing: true,
+	}
+
+	vals := specToAsyncHelmValues(gw, testSecretName(gw), testImages())
+	ap := vals["ap"].(map[string]any)
+	transportConfig, ok := ap["transportConfig"].(map[string]any)
+	if !ok {
+		t.Fatal("ap.transportConfig missing or wrong type")
+	}
+	if got := transportConfig["poll_interval_ms"]; got != int64(500) {
+		t.Errorf("transportConfig.poll_interval_ms = %v, want 500", got)
+	}
+	if got := transportConfig["batch_size"]; got != int64(10) {
+		t.Errorf("transportConfig.batch_size = %v, want 10", got)
+	}
+	if got := transportConfig["enable_tracing"]; got != true {
+		t.Errorf("transportConfig.enable_tracing = %v, want true", got)
+	}
+	queues, ok := transportConfig["queues"].([]any)
+	if !ok || len(queues) != 1 {
+		t.Fatalf("transportConfig.queues = %v, want one queue", transportConfig["queues"])
+	}
+	queue, ok := queues[0].(map[string]any)
+	if !ok {
+		t.Fatal("transportConfig.queues[0] is not a map")
+	}
+	if got := queue["queue_name"]; got != "llm-d-async:requests:pool-a" {
+		t.Errorf("queue_name = %v, want llm-d-async:requests:pool-a", got)
+	}
+	if got := queue["worker_pool_id"]; got != "pool-a-workers" {
+		t.Errorf("worker_pool_id = %v, want pool-a-workers", got)
+	}
+	if got := queue["igw_base_url"]; got != "http://epp-pool-a:8081" {
+		t.Errorf("igw_base_url = %v, want http://epp-pool-a:8081", got)
+	}
+	if got := queue["gate_type"]; got != "prometheus-budget" {
+		t.Errorf("gate_type = %v, want prometheus-budget", got)
+	}
+	gateParams, ok := queue["gate_params"].(map[string]any)
+	if !ok {
+		t.Fatal("gate_params missing or wrong type")
+	}
+	if got := gateParams["pool"]; got != "pool-a" {
+		t.Errorf("gate_params.pool = %v, want pool-a", got)
 	}
 }
 
@@ -293,7 +389,7 @@ func TestSpecToAsyncHelmValues_NoImagePullSecrets(t *testing.T) {
 }
 
 func TestRenderAsyncChart(t *testing.T) {
-	renderer, err := NewHelmRenderer("../../llm-d-async/charts/async-processor", testImages(), tlspkg.ProfileValues{})
+	renderer, err := NewHelmRenderer("../../llm-d-async/charts/llm-d-async", testImages(), tlspkg.ProfileValues{})
 	if err != nil {
 		t.Fatalf("NewHelmRenderer() error: %v", err)
 	}
@@ -320,9 +416,20 @@ func TestRenderAsyncChart(t *testing.T) {
 
 	t.Run("has deployment", func(t *testing.T) {
 		found := false
+		deploymentName := gw.Name + "-async-processor"
 		for _, obj := range objects {
 			if obj.GetKind() == "Deployment" {
 				found = true
+				if obj.GetName() != deploymentName {
+					t.Errorf("Deployment name = %q, want %q", obj.GetName(), deploymentName)
+				}
+				selector, found, err := unstructured.NestedString(obj.Object, "spec", "selector", "matchLabels", "app.kubernetes.io/name")
+				if err != nil || !found {
+					t.Fatalf("Deployment selector app.kubernetes.io/name not found: %v", err)
+				}
+				if selector != "async-processor" {
+					t.Errorf("Deployment selector app.kubernetes.io/name = %q, want async-processor", selector)
+				}
 				break
 			}
 		}

@@ -18,7 +18,7 @@ func (h *HelmRenderer) RenderAsyncChart(gw *batchv1alpha1.LLMBatchGateway, secre
 	})
 }
 
-// specToAsyncHelmValues maps the CRD spec to upstream async-processor Helm values.
+// specToAsyncHelmValues maps the CRD spec to upstream llm-d-async Helm values.
 func specToAsyncHelmValues(gw *batchv1alpha1.LLMBatchGateway, secretName string, images ComponentImages) map[string]any {
 	ac := gw.Spec.Processor.AsyncConfig
 	if ac == nil {
@@ -59,24 +59,24 @@ func specToAsyncHelmValues(gw *batchv1alpha1.LLMBatchGateway, secretName string,
 	setIfNotEmpty(ap, "prometheusCacheTTL", ac.PrometheusCacheTTL)
 
 	if ac.Redis != nil {
-		redis := map[string]any{
-			"enabled":    true,
-			"secretName": secretName,
-			"secretKey":  "redis-url",
+		transportConfig := map[string]any{
+			"urlSecret": map[string]any{
+				"name": secretName,
+				"key":  "redis-url",
+			},
 		}
-		setIfNotEmpty(redis, "requestPathURL", ac.Redis.RequestPathURL)
 		if ac.Redis.PollIntervalMs != nil {
-			redis["pollIntervalMs"] = int64(*ac.Redis.PollIntervalMs)
+			transportConfig["poll_interval_ms"] = int64(*ac.Redis.PollIntervalMs)
 		}
 		if ac.Redis.BatchSize != nil {
-			redis["batchSize"] = int64(*ac.Redis.BatchSize)
+			transportConfig["batch_size"] = int64(*ac.Redis.BatchSize)
 		}
-		setIfNotEmpty(redis, "gateType", ac.Redis.GateType)
-		if len(ac.Redis.GateParams) > 0 {
-			redis["gateParams"] = toStringInterfaceMap(ac.Redis.GateParams)
+		if gw.Spec.OTEL != nil && gw.Spec.OTEL.RedisTracing {
+			transportConfig["enable_tracing"] = true
 		}
+
+		var queues []any
 		if len(ac.Redis.QueuesConfig) > 0 {
-			var queues []any
 			for _, q := range ac.Redis.QueuesConfig {
 				qm := map[string]any{
 					"queue_name": q.Name,
@@ -90,11 +90,24 @@ func specToAsyncHelmValues(gw *batchv1alpha1.LLMBatchGateway, secretName string,
 				}
 				queues = append(queues, qm)
 			}
-			redis["queuesConfig"] = queues
+		} else {
+			qm := map[string]any{
+				"queue_name": "request-sortedset",
+			}
+			if ac.InferenceGateway != nil {
+				setIfNotEmpty(qm, "igw_base_url", ac.InferenceGateway.URL)
+			}
+			setIfNotEmpty(qm, "request_path_url", ac.Redis.RequestPathURL)
+			setIfNotEmpty(qm, "gate_type", ac.Redis.GateType)
+			if len(ac.Redis.GateParams) > 0 {
+				qm["gate_params"] = toStringInterfaceMap(ac.Redis.GateParams)
+			}
+			queues = append(queues, qm)
 		}
-		ap["redis"] = redis
+		transportConfig["queues"] = queues
+		ap["transport"] = "redis-sortedset"
+		ap["transportConfig"] = transportConfig
 	}
-	ap["messageQueueImpl"] = "redis-sortedset" // this is the only support value here even upstream might have different options
 
 	if len(ac.WorkerPools) > 0 {
 		var pools []any
@@ -198,6 +211,9 @@ func specToAsyncHelmValues(gw *batchv1alpha1.LLMBatchGateway, secretName string,
 	}
 
 	return map[string]any{
-		"ap": ap,
+		// Preserve the resource names and Deployment selector used by the
+		// previous async-processor chart during in-place operator upgrades.
+		"nameOverride": "async-processor",
+		"ap":           ap,
 	}
 }
