@@ -13,12 +13,12 @@ KIND_CLUSTER_NAME ?= batch-gateway-dev
 ## The full batch-gateway repo is checked out in $(BATCH_GATEWAY_DIR); the operator uses its chart + e2e tests.
 ## This replaces the old git submodule solution.
 BATCH_GATEWAY_REPO ?= https://github.com/opendatahub-io/batch-gateway.git
-BATCH_GATEWAY_REF  ?= 3372e140a342275ce6cb09bee51456884f275077
+BATCH_GATEWAY_REF  ?= baab7e5c909cfc691c62d2e3c96b1996237cffca
 BATCH_GATEWAY_DIR  ?= batch-gateway
 
-## Only the async-processor chart is sparse-checked-out from llm-d-async.
+## Only the llm-d-async chart is sparse-checked-out from llm-d-async.
 LLM_D_ASYNC_REPO ?= https://github.com/opendatahub-io/llm-d-async.git
-LLM_D_ASYNC_REF  ?= dc30b7bb03d5f7d27cf097fd2d296675ed9f5376
+LLM_D_ASYNC_REF  ?= e060b17f9f6cd906f818786ea5481169c68ad497
 LLM_D_ASYNC_DIR  ?= llm-d-async
 
 ## Deps
@@ -141,8 +141,11 @@ TEST_RUN ?= TestE2E/Batches/Lifecycle
 test-e2e-batch-gateway: fetch-batch-gateway
 	bash hack/test-e2e-batch-gateway.sh
 
-.PHONY: test-e2e-operator
+.PHONY: test-e2e-operator test-e2e-operator-no-deploy
 test-e2e-operator: dev-deploy
+	$(MAKE) test-e2e-operator-no-deploy
+
+test-e2e-operator-no-deploy:
 	cd test/e2e && TEST_CR_NAME=batch-gateway-dev go test -v -count=1 -timeout 5m ./...
 
 .PHONY: fetch-batch-gateway
@@ -164,19 +167,22 @@ fetch-batch-gateway: ## Fetch the full batch-gateway repo at BATCH_GATEWAY_REF (
 	fi
 
 .PHONY: fetch-llm-d-async
-fetch-llm-d-async: ## Sparse-checkout only charts/async-processor from llm-d-async at LLM_D_ASYNC_REF.
+fetch-llm-d-async: ## Sparse-checkout only charts/llm-d-async from llm-d-async at LLM_D_ASYNC_REF.
 	@if ! git -C "$(LLM_D_ASYNC_DIR)" rev-parse --git-dir >/dev/null 2>&1; then \
-		echo "Cloning llm-d-async $(LLM_D_ASYNC_REF) from $(LLM_D_ASYNC_REPO) (sparse: charts/async-processor)"; \
+		echo "Cloning llm-d-async $(LLM_D_ASYNC_REF) from $(LLM_D_ASYNC_REPO) (sparse: charts/llm-d-async)"; \
 		git init -q "$(LLM_D_ASYNC_DIR)" && \
-		git -C "$(LLM_D_ASYNC_DIR)" sparse-checkout set --no-cone 'charts/async-processor/*' && \
+		git -C "$(LLM_D_ASYNC_DIR)" sparse-checkout set --no-cone 'charts/llm-d-async/*' && \
 		git -C "$(LLM_D_ASYNC_DIR)" fetch -q --depth 1 "$(LLM_D_ASYNC_REPO)" "$(LLM_D_ASYNC_REF)" && \
 		git -C "$(LLM_D_ASYNC_DIR)" checkout -q FETCH_HEAD; \
-	elif [ "$$(git -C "$(LLM_D_ASYNC_DIR)" rev-parse HEAD)" = "$(LLM_D_ASYNC_REF)" ]; then \
-		echo "llm-d-async already at $(LLM_D_ASYNC_REF)"; \
 	else \
-		echo "Updating llm-d-async to $(LLM_D_ASYNC_REF) from $(LLM_D_ASYNC_REPO)"; \
-		git -C "$(LLM_D_ASYNC_DIR)" fetch -q --depth 1 "$(LLM_D_ASYNC_REPO)" "$(LLM_D_ASYNC_REF)" && \
-		git -C "$(LLM_D_ASYNC_DIR)" checkout -q FETCH_HEAD; \
+		git -C "$(LLM_D_ASYNC_DIR)" sparse-checkout set --no-cone 'charts/llm-d-async/*' && \
+		if [ "$$(git -C "$(LLM_D_ASYNC_DIR)" rev-parse HEAD)" = "$(LLM_D_ASYNC_REF)" ]; then \
+			echo "llm-d-async already at $(LLM_D_ASYNC_REF)"; \
+		else \
+			echo "Updating llm-d-async to $(LLM_D_ASYNC_REF) from $(LLM_D_ASYNC_REPO)"; \
+			git -C "$(LLM_D_ASYNC_DIR)" fetch -q --depth 1 "$(LLM_D_ASYNC_REPO)" "$(LLM_D_ASYNC_REF)" && \
+			git -C "$(LLM_D_ASYNC_DIR)" checkout -q FETCH_HEAD; \
+		fi; \
 	fi
 
 .PHONY: sync-prefetched-charts
@@ -184,6 +190,6 @@ sync-prefetched-charts: fetch-batch-gateway fetch-llm-d-async ## For downstream 
 	@rm -rf prefetched-charts/batch-gateway && mkdir -p prefetched-charts
 	@cp -r "$(BATCH_GATEWAY_DIR)/charts/batch-gateway" prefetched-charts/batch-gateway
 	@echo "synced prefetched-charts/batch-gateway at $(BATCH_GATEWAY_REF)"
-	@rm -rf prefetched-charts/async-processor && mkdir -p prefetched-charts
-	@cp -r "$(LLM_D_ASYNC_DIR)/charts/async-processor" prefetched-charts/async-processor
-	@echo "synced prefetched-charts/async-processor at $(LLM_D_ASYNC_REF)"
+	@rm -rf prefetched-charts/llm-d-async && mkdir -p prefetched-charts
+	@cp -r "$(LLM_D_ASYNC_DIR)/charts/llm-d-async" prefetched-charts/llm-d-async
+	@echo "synced prefetched-charts/llm-d-async at $(LLM_D_ASYNC_REF)"

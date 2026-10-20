@@ -9,6 +9,7 @@ import (
 
 	appsv1 "k8s.io/api/apps/v1"
 	corev1 "k8s.io/api/core/v1"
+	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	"k8s.io/apimachinery/pkg/api/resource"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/types"
@@ -21,8 +22,9 @@ import (
 )
 
 const (
-	llmBatchGatewayKind = "LLMBatchGateway"
-	secretKind          = "Secret"
+	llmBatchGatewayKind     = "LLMBatchGateway"
+	secretKind              = "Secret"
+	testInferenceGatewayURL = "http://epp:8081"
 )
 
 func newTestGateway(name string) *batchv1alpha1.LLMBatchGateway {
@@ -86,6 +88,29 @@ func TestValidateSpecRejectsQueueNamesOutsideAsyncMode(t *testing.T) {
 		if err == nil || !strings.Contains(err.Error(), "processor.modelGateways[model-a].requestQueueName") {
 			t.Fatalf("validateSpec() error = %v, want modelGateways queue name error", err)
 		}
+	})
+}
+
+func TestLLMBatchGatewayResumableFinalizeTimeoutValidation(t *testing.T) {
+	ctx := context.Background()
+	gw := newTestGateway("test-resumable-finalize-timeout")
+	gw.Spec.Processor.Config = &batchv1alpha1.ProcessorConfigSpec{
+		Resumable: &batchv1alpha1.ResumableConfigSpec{
+			FinalizeTimeout: "0s",
+		},
+	}
+
+	err := k8sClient.Create(ctx, gw)
+	if !apierrors.IsInvalid(err) {
+		t.Fatalf("Create() with finalizeTimeout 0s error = %v, want Invalid", err)
+	}
+
+	gw.Spec.Processor.Config.Resumable.FinalizeTimeout = "1s"
+	if err := k8sClient.Create(ctx, gw); err != nil {
+		t.Fatalf("Create() with finalizeTimeout 1s: %v", err)
+	}
+	t.Cleanup(func() {
+		_ = k8sClient.Delete(ctx, gw)
 	})
 }
 
@@ -970,7 +995,7 @@ func newTestAsyncGateway(name string) *batchv1alpha1.LLMBatchGateway {
 		DrainTimeout:      "2m",
 		ResultPollTimeout: "30s",
 		InferenceGateway: &batchv1alpha1.InferenceGatewaySpec{
-			URL: "http://epp:8081",
+			URL: testInferenceGatewayURL,
 		},
 		Redis: &batchv1alpha1.AsyncRedisSpec{},
 	}
@@ -984,7 +1009,7 @@ func TestReconcileAsync(t *testing.T) {
 	if err != nil {
 		t.Fatalf("NewHelmRenderer(batch) error: %v", err)
 	}
-	asyncHelmRenderer, err := NewHelmRenderer("../../llm-d-async/charts/async-processor", testImages(), tlspkg.ProfileValues{})
+	asyncHelmRenderer, err := NewHelmRenderer("../../llm-d-async/charts/llm-d-async", testImages(), tlspkg.ProfileValues{})
 	if err != nil {
 		t.Fatalf("NewHelmRenderer(async) error: %v", err)
 	}

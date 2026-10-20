@@ -1,11 +1,13 @@
 package controller
 
 import (
+	"strings"
 	"testing"
 
 	corev1 "k8s.io/api/core/v1"
 	"k8s.io/apimachinery/pkg/api/resource"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
 	"k8s.io/utils/ptr"
 
 	batchv1alpha1 "github.com/opendatahub-io/llm-d-batch-gateway-operator/api/v1alpha1"
@@ -27,7 +29,7 @@ func testImages() ComponentImages {
 		APIServer: "ghcr.io/llm-d/batch-gateway-apiserver:latest",
 		Processor: "ghcr.io/llm-d/batch-gateway-processor:latest",
 		GC:        "ghcr.io/llm-d/batch-gateway-gc:latest",
-		Async:     "ghcr.io/llm-d-incubation/llm-d-async:v0.7.2", // TODO: sync with Makefile tag
+		Async:     "ghcr.io/llm-d/llm-d-async:v1.0.0",
 	}
 }
 
@@ -422,6 +424,37 @@ func TestRenderBatchChart(t *testing.T) {
 			}
 		}
 	})
+}
+
+func TestRenderBatchChart_ResumableDefaults(t *testing.T) {
+	renderer, err := NewHelmRenderer("../../batch-gateway/charts/batch-gateway", testImages(), tlspkg.ProfileValues{})
+	if err != nil {
+		t.Fatalf("NewHelmRenderer() error: %v", err)
+	}
+
+	objects, err := renderer.RenderBatchChart(minimalGateway(), testSecretName(minimalGateway()))
+	if err != nil {
+		t.Fatalf("RenderBatchChart() error: %v", err)
+	}
+
+	for _, obj := range objects {
+		if obj.GetKind() != "ConfigMap" || !strings.Contains(obj.GetName(), "processor") {
+			continue
+		}
+		data, found, err := unstructured.NestedString(obj.Object, "data", "config.yaml")
+		if err != nil {
+			t.Fatalf("reading processor ConfigMap data: %v", err)
+		}
+		if !found {
+			t.Fatal("processor ConfigMap has no data.config.yaml")
+		}
+		if !strings.Contains(data, `finalize_timeout: "30m"`) {
+			t.Fatalf("processor ConfigMap resumable defaults = %q, want finalize_timeout 30m", data)
+		}
+		return
+	}
+
+	t.Fatal("processor ConfigMap not rendered")
 }
 
 func TestRenderBatchChart_WithMonitoring(t *testing.T) {
@@ -895,6 +928,11 @@ func TestSpecToHelmValues_ProcessorConfig(t *testing.T) {
 			PerEndpoint: 16,
 			Recovery:    4,
 		},
+		Resumable: &batchv1alpha1.ResumableConfigSpec{
+			LeaseDuration:       "5m",
+			FinalizeConcurrency: 16,
+			FinalizeTimeout:     "30m",
+		},
 		InputFileDiskBudgetPercent:     20,
 		ExtraEndpoints:                 ptr.To([]string{classifyEndpoint}),
 		DefaultOutputExpirationSeconds: 7200,
@@ -922,6 +960,19 @@ func TestSpecToHelmValues_ProcessorConfig(t *testing.T) {
 	}
 	if got := concurrency["recovery"]; got != int64(4) {
 		t.Errorf("concurrency.recovery = %v, want 4", got)
+	}
+	resumable, ok := config["resumable"].(map[string]interface{})
+	if !ok {
+		t.Fatalf("resumable not found or wrong type: %T", config["resumable"])
+	}
+	if got := resumable["leaseDuration"]; got != "5m" {
+		t.Errorf("resumable.leaseDuration = %v, want 5m", got)
+	}
+	if got := resumable["finalizeConcurrency"]; got != int64(16) {
+		t.Errorf("resumable.finalizeConcurrency = %v, want 16", got)
+	}
+	if got := resumable["finalizeTimeout"]; got != "30m" {
+		t.Errorf("resumable.finalizeTimeout = %v, want 30m", got)
 	}
 	gwConfig, ok := config["globalInferenceGateway"].(map[string]interface{})
 	if !ok {

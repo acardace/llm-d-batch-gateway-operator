@@ -457,6 +457,25 @@ type ConcurrencyConfig struct {
 	AIMD *AIMDConfig `json:"aimd,omitempty"`
 }
 
+// ResumableConfigSpec holds tunables for the processor's resumable pipeline.
+type ResumableConfigSpec struct {
+	// LeaseDuration is the PostgreSQL ownership lease held by an activated batch.
+	// The owning processor renews the lease at half this interval.
+	// +kubebuilder:validation:Pattern=`^([1-9][0-9]*s|[1-9][0-9]*m|[1-9][0-9]*h)([0-9]+s|[0-9]+m|[0-9]+h)*$`
+	// +kubebuilder:validation:MaxLength=32
+	LeaseDuration string `json:"leaseDuration,omitempty"`
+
+	// FinalizeConcurrency bounds parallel result-object fetches during finalization.
+	// +kubebuilder:validation:Minimum=1
+	FinalizeConcurrency int32 `json:"finalizeConcurrency,omitempty"`
+
+	// FinalizeTimeout is the budget for one resumable finalization attempt.
+	// +kubebuilder:validation:Pattern=`^([0-9]+(\.[0-9]+)?(ms|s|m|h))+$`
+	// +kubebuilder:validation:MaxLength=32
+	// +kubebuilder:validation:XValidation:rule="duration(self) > duration('0s')",message="finalizeTimeout must be greater than 0s"
+	FinalizeTimeout string `json:"finalizeTimeout,omitempty"`
+}
+
 // ProcessorConfigSpec holds fine-grained configuration for the processor process.
 type ProcessorConfigSpec struct {
 	// NumWorkers is the number of concurrent worker goroutines processing jobs.
@@ -477,6 +496,9 @@ type ProcessorConfigSpec struct {
 
 	// Concurrency groups all dispatch-rate and concurrency control knobs.
 	Concurrency *ConcurrencyConfig `json:"concurrency,omitempty"`
+
+	// Resumable holds tunables for the resumable batch pipeline.
+	Resumable *ResumableConfigSpec `json:"resumable,omitempty"`
 
 	// InferenceObjective is applied to globalInferenceGateway and to every
 	// modelGateways entry that does not set its own inferenceObjective.

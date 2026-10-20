@@ -545,14 +545,21 @@ apply_and_verify_cr() {
     if [[ "$expected_dispatch" == "async" ]]; then
         local deploy_json
         deploy_json=$(kubectl get deployment "${cr_name}-async-processor" -n "${NAMESPACE}" -o json)
-        local queues_json
-        queues_json=$(echo "$deploy_json" | jq -r '.spec.template.spec.containers[0].args[]' | grep '^\[')
+        local transport_json
+        transport_json=$(echo "$deploy_json" | jq -r '
+            .spec.template.spec.containers[0].args as $args |
+            ($args | index("--transport-config")) as $index |
+            if $index == null then "" else $args[$index + 1] end
+        ')
+        if [[ -z "$transport_json" ]]; then
+            die "Async processor transport config not found in Deployment args"
+        fi
 
         # Verify gate type if a gate profile is deployed
         if [[ "${DEV_PROFILE}" == async-gate-* ]]; then
             local expected_gate="${DEV_PROFILE##*gate-}"
             local actual_gate
-            actual_gate=$(echo "$queues_json" | jq -r '.[0].gate_type')
+            actual_gate=$(echo "$transport_json" | jq -r '.queues[0].gate_type // empty')
 
             if [[ "$actual_gate" == "$expected_gate" ]]; then
                 log "Queue gate type verified: $actual_gate"
@@ -565,7 +572,7 @@ apply_and_verify_cr() {
         local expected_pool_id
         expected_pool_id=$(yq '.spec.processor.asyncConfig.redis.queuesConfig[0].workerPoolID' "$cr_file")
         local pool_id
-        pool_id=$(echo "$queues_json" | jq -r '.[0].worker_pool_id')
+        pool_id=$(echo "$transport_json" | jq -r '.queues[0].worker_pool_id // empty')
         if [[ -z "$expected_pool_id" || "$expected_pool_id" == "null" ]]; then
             log "Worker pool ID not set in CR, using API default: $pool_id"
         elif [[ "$pool_id" == "$expected_pool_id" ]]; then

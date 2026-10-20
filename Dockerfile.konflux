@@ -17,7 +17,7 @@ COPY internal/ internal/
 # Obtain Helm charts into /tmp staging directories.
 COPY Makefile ./
 
-RUN mkdir -p -m 755 /tmp/batch-gateway-chart /tmp/async-processor-chart /tmp/prefetched-charts
+RUN mkdir -p -m 755 /tmp/batch-gateway-chart /tmp/llm-d-async-chart /tmp/prefetched-charts
 # For all the crazy permisison denies
 COPY --chown=1001:0 Dockerfile prefetched-charts* /tmp/prefetched-charts/
 
@@ -25,10 +25,10 @@ RUN if [ "${BUILD_TYPE}" != "CI" ]; then \
         make fetch-batch-gateway && \
         cp -r batch-gateway/charts/batch-gateway/* /tmp/batch-gateway-chart/ && \
         make fetch-llm-d-async && \
-        cp -r llm-d-async/charts/async-processor/* /tmp/async-processor-chart/; \
+        cp -r llm-d-async/charts/llm-d-async/* /tmp/llm-d-async-chart/; \
     else \
         cp -r /tmp/prefetched-charts/batch-gateway/* /tmp/batch-gateway-chart/ 2>/dev/null || true; \
-        cp -r /tmp/prefetched-charts/async-processor/* /tmp/async-processor-chart/ 2>/dev/null || true; \
+        cp -r /tmp/prefetched-charts/llm-d-async/* /tmp/llm-d-async-chart/ 2>/dev/null || true; \
     fi
 
 RUN mkdir -p bin && \
@@ -40,12 +40,12 @@ FROM registry.access.redhat.com/ubi9/ubi-minimal:9.7@sha256:dd334afa72444fa46238
 WORKDIR /
 COPY --from=builder /opt/app-root/src/bin/manager /manager
 COPY --from=builder /tmp/batch-gateway-chart /charts/batch-gateway/
-COPY --from=builder /tmp/async-processor-chart /charts/async-processor/
+COPY --from=builder /tmp/llm-d-async-chart /charts/llm-d-async/
 RUN rm -f /charts/batch-gateway/Dockerfile && \
     test -f /charts/batch-gateway/Chart.yaml || \
     { echo "ERROR: /charts/batch-gateway/Chart.yaml not found. Chart directory contents:"; ls -la /charts/batch-gateway/; exit 1; } && \
-    test -f /charts/async-processor/Chart.yaml || \
-    { echo "ERROR: /charts/async-processor/Chart.yaml not found. Chart directory contents:"; ls -la /charts/async-processor/; exit 1; }
+    test -f /charts/llm-d-async/Chart.yaml || \
+    { echo "ERROR: /charts/llm-d-async/Chart.yaml not found. Chart directory contents:"; ls -la /charts/llm-d-async/; exit 1; }
 
 USER 1001:1001
 ENTRYPOINT ["/manager"]

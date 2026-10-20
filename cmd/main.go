@@ -102,7 +102,7 @@ func main() {
 	var reconcileTimeout time.Duration
 
 	flag.StringVar(&batchGatewayChartPath, "batch-gateway-chart-path", "/charts/batch-gateway", "Path to the batch-gateway Helm chart directory")
-	flag.StringVar(&asyncChartPath, "async-chart-path", "/charts/async-processor", "Path to the async-processor Helm chart directory")
+	flag.StringVar(&asyncChartPath, "async-chart-path", "/charts/llm-d-async", "Path to the llm-d-async Helm chart directory")
 	flag.StringVar(&metricsAddr, "metrics-bind-address", ":8443", "Address the metrics endpoint binds to")
 	flag.BoolVar(&metricsSecure, "metrics-secure", true, "Serve metrics via HTTPS with authn/authz. Use --metrics-secure=false for HTTP on xKS.")
 	flag.StringVar(&metricsCertPath, "metrics-cert-path", "", "Directory containing the metrics server TLS cert and key. Empty uses in-memory certificates when --metrics-secure=true.")

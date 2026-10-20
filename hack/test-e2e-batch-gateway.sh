@@ -66,6 +66,16 @@ get_async_metric() {
     get_async_metrics | { grep "^${metric_name}" || true; } | awk '{sum+=$2} END {printf "%d", sum}'
 }
 
+get_async_transport_config() {
+    local deploy_json
+    deploy_json=$(kubectl get deployment "${CR_NAME}-async-processor" -n "${NAMESPACE}" -o json)
+    echo "$deploy_json" | jq -r '
+        .spec.template.spec.containers[0].args as $args |
+        ($args | index("--transport-config")) as $index |
+        if $index == null then "" else $args[$index + 1] end
+    '
+}
+
 # ── Detect dispatch mode from processor configmap ────────────────────────────
 
 dispatch_mode=$(kubectl get configmap -n "${NAMESPACE}" \
@@ -91,7 +101,9 @@ if [[ "$dispatch_mode" == "async" ]]; then
     log "async_successful_requests_total before: $before_success"
 
     step "Running async dispatcher e2e tests (${TEST_RUN})..."
-    go test -v -count=1 -run "${TEST_RUN}" ./...
+    # The operator deploys the CR under CR_NAME; pass that release name to the
+    # batch-gateway E2E module so it finds the processor ConfigMap and pods.
+    TEST_HELM_RELEASE="${CR_NAME}" go test -v -count=1 -run "${TEST_RUN}" ./...
 
     step "Verifying requests went through llm-d-async..."
     after_success=$(get_async_metric "llm_d_async_async_successful_requests_total")
@@ -111,10 +123,8 @@ if [[ "$dispatch_mode" == "async" ]]; then
     fi
 
     # Verify gate budget if a gate type is configured
-    gate_type=""
-    gate_type=$(kubectl get deployment "${CR_NAME}-async-processor" -n "${NAMESPACE}" -o json \
-        | jq -r '.spec.template.spec.containers[0].args[]' \
-        | grep '^\[' | jq -r '.[0].gate_type // empty')
+    transport_config=$(get_async_transport_config)
+    gate_type=$(echo "$transport_config" | jq -r '.queues[0].gate_type // empty')
     if [ -n "$gate_type" ]; then
         budget_line=$(get_async_metrics | grep "^llm_d_async_async_dispatch_budget" | head -1)
         if [ -n "$budget_line" ]; then
