@@ -11,10 +11,10 @@ import (
 // When set on LLMBatchGatewaySpec, the controller deploys an additional
 // async-processor Deployment alongside the core components.
 type AsyncProcessorSpec struct {
-	// Replicas is the desired number of async-processor pods.
-	// Setting this to 0 suspends the async-processor; the Ready condition will be False.
-	// NOTE: the upstream llm-d-async chart currently hardcodes replicas to 1;
-	// this field will take effect once the upstream chart templates it from values.
+	// Replicas is reserved for the future desired number of async-processor pods.
+	// It is currently ignored: the upstream llm-d-async chart hardcodes replicas to 1.
+	// Setting this field, including 0, does not change or suspend the async processor.
+	// It will take effect only after the upstream chart templates it from values.
 	// +kubebuilder:default=1
 	// +kubebuilder:validation:Minimum=0
 	Replicas *int32 `json:"replicas,omitempty"`

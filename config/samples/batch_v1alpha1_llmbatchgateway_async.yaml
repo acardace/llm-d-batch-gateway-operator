@@ -44,7 +44,6 @@ spec:
         inferencePoolName: whisper-pool
     dispatchMode: async
     asyncConfig:
-      replicas: 1
       concurrency: 8
       drainTimeout: 2m
       resultPollTimeout: 30s

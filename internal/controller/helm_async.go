@@ -79,36 +79,31 @@ func specToAsyncHelmValues(gw *batchv1alpha1.LLMBatchGateway, secretName string,
 			transportConfig["enable_tracing"] = true
 		}
 
-		var queues []any
-		if len(ac.Redis.QueuesConfig) > 0 {
-			for _, q := range ac.Redis.QueuesConfig {
-				qm := map[string]any{
-					"queue_name": q.Name,
-				}
-				setIfNotEmpty(qm, "worker_pool_id", q.WorkerPoolID)
-				queueGatewayURL := q.IGWBaseURL
-				if queueGatewayURL == "" {
-					queueGatewayURL = gatewayURL
-				}
-				setIfNotEmpty(qm, "igw_base_url", queueGatewayURL)
-				setIfNotEmpty(qm, "request_path_url", q.RequestPathURL)
-				setIfNotEmpty(qm, "gate_type", q.GateType)
-				if len(q.GateParams) > 0 {
-					qm["gate_params"] = toStringInterfaceMap(q.GateParams)
-				}
-				queues = append(queues, qm)
-			}
-		} else {
+		queueConfigs := ac.Redis.QueuesConfig
+		if len(queueConfigs) == 0 {
+			queueConfigs = []batchv1alpha1.AsyncQueueConfig{{
+				Name:           "request-sortedset",
+				RequestPathURL: ac.Redis.RequestPathURL,
+				GateType:       ac.Redis.GateType,
+				GateParams:     ac.Redis.GateParams,
+			}}
+		}
+
+		queues := make([]any, 0, len(queueConfigs))
+		for _, q := range queueConfigs {
 			qm := map[string]any{
-				"queue_name": "request-sortedset",
+				"queue_name": q.Name,
 			}
-			if ac.InferenceGateway != nil {
-				setIfNotEmpty(qm, "igw_base_url", ac.InferenceGateway.URL)
+			setIfNotEmpty(qm, "worker_pool_id", q.WorkerPoolID)
+			queueGatewayURL := q.IGWBaseURL
+			if queueGatewayURL == "" {
+				queueGatewayURL = gatewayURL
 			}
-			setIfNotEmpty(qm, "request_path_url", ac.Redis.RequestPathURL)
-			setIfNotEmpty(qm, "gate_type", ac.Redis.GateType)
-			if len(ac.Redis.GateParams) > 0 {
-				qm["gate_params"] = toStringInterfaceMap(ac.Redis.GateParams)
+			setIfNotEmpty(qm, "igw_base_url", queueGatewayURL)
+			setIfNotEmpty(qm, "request_path_url", q.RequestPathURL)
+			setIfNotEmpty(qm, "gate_type", q.GateType)
+			if len(q.GateParams) > 0 {
+				qm["gate_params"] = toStringInterfaceMap(q.GateParams)
 			}
 			queues = append(queues, qm)
 		}

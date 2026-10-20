@@ -39,7 +39,7 @@ This release runs async batches through the resumable pipeline. There is no `res
 
 Rows written before the unified resumable pipeline cannot be resumed. Drain in-flight batches before upgrading. Completed and terminal batches are not affected.
 
-The pipeline supports multiple processor replicas. Tune lease renewal, finalization concurrency, and finalization timeout with `spec.processor.config.resumable`.
+The current llm-d-async chart always deploys one async processor replica. `spec.processor.asyncConfig.replicas` is accepted but ignored, including the value `0`; it does not change or suspend the async processor Deployment. Tune lease renewal, finalization concurrency, and finalization timeout with `spec.processor.config.resumable`.
 
 ## Resulting Behavior
 

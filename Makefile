@@ -142,7 +142,8 @@ test-e2e-batch-gateway: fetch-batch-gateway
 	bash hack/test-e2e-batch-gateway.sh
 
 .PHONY: test-e2e-operator test-e2e-operator-no-deploy
-test-e2e-operator: dev-deploy test-e2e-operator-no-deploy
+test-e2e-operator: dev-deploy
+	$(MAKE) test-e2e-operator-no-deploy
 
 test-e2e-operator-no-deploy:
 	cd test/e2e && TEST_CR_NAME=batch-gateway-dev go test -v -count=1 -timeout 5m ./...

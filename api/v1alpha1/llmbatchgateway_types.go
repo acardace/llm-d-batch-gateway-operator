@@ -472,6 +472,7 @@ type ResumableConfigSpec struct {
 	// FinalizeTimeout is the budget for one resumable finalization attempt.
 	// +kubebuilder:validation:Pattern=`^([0-9]+(\.[0-9]+)?(ms|s|m|h))+$`
 	// +kubebuilder:validation:MaxLength=32
+	// +kubebuilder:validation:XValidation:rule="duration(self) > duration('0s')",message="finalizeTimeout must be greater than 0s"
 	FinalizeTimeout string `json:"finalizeTimeout,omitempty"`
 }
 
