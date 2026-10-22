@@ -148,7 +148,14 @@ func main() {
 		os.Exit(1)
 	}
 
-	helmTLSProfile := tlsinit.ProfileValuesFromSpec(tlsResult.Profile)
+	helmTLSProfile, unsupportedCiphers, err := tlsinit.ProfileValuesFromSpec(tlsResult.Profile)
+	if err != nil {
+		logger.Error(err, "unable to convert cluster TLS profile for Batch Gateway")
+		os.Exit(1)
+	}
+	if len(unsupportedCiphers) > 0 {
+		logger.Info("omitting TLS cipher suites unsupported by Batch Gateway", "unsupported", unsupportedCiphers)
+	}
 
 	batchGWHelmRenderer, err := controller.NewHelmRenderer(batchGatewayChartPath, images, helmTLSProfile)
 	if err != nil {

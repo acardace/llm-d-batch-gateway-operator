@@ -40,18 +40,90 @@ type ProfileValues struct {
 }
 
 // ProfileValuesFromSpec converts a configv1.TLSProfileSpec into
-// string values suitable for helm chart injection.
-func ProfileValuesFromSpec(spec configv1.TLSProfileSpec) ProfileValues {
+// string values suitable for helm chart injection. It returns an error when
+// a non-TLS 1.3 profile contains no cipher suite accepted by Batch Gateway.
+func ProfileValuesFromSpec(spec configv1.TLSProfileSpec) (ProfileValues, []string, error) {
 	vals := ProfileValues{
 		NextProtos: defaultNextProtos,
 	}
 	if spec.MinTLSVersion != "" {
 		vals.MinVersion = string(spec.MinTLSVersion)
+		if spec.MinTLSVersion != configv1.VersionTLS12 && spec.MinTLSVersion != configv1.VersionTLS13 {
+			return vals, nil, fmt.Errorf("TLS profile minimum version %q is not supported by Batch Gateway; supported values are %q and %q", spec.MinTLSVersion, configv1.VersionTLS12, configv1.VersionTLS13)
+		}
 	}
 	if len(spec.Ciphers) > 0 {
-		vals.CipherSuites = strings.Join(spec.Ciphers, ",")
+		cipherSuites, unsupported := batchGatewayCipherSuiteNames(spec)
+		if spec.MinTLSVersion != configv1.VersionTLS13 && !hasTLS12CipherSuite(cipherSuites) {
+			details := unsupported
+			if len(details) == 0 {
+				details = spec.Ciphers
+			}
+			return vals, unsupported, fmt.Errorf("TLS profile contains no cipher suite usable with TLS 1.2: %s", strings.Join(details, ", "))
+		}
+		vals.CipherSuites = strings.Join(cipherSuites, ",")
+		return vals, unsupported, nil
 	}
-	return vals
+	return vals, nil, nil
+}
+
+// batchGatewayCipherSuiteNames converts OpenShift TLS profile cipher names to
+// names accepted by the Batch Gateway API server. It preserves the original
+// cipher name when reporting suites that Batch Gateway does not support.
+func batchGatewayCipherSuiteNames(spec configv1.TLSProfileSpec) ([]string, []string) {
+	if spec.MinTLSVersion == configv1.VersionTLS13 {
+		return nil, nil
+	}
+
+	supported := make(map[string]struct{}, len(tls.CipherSuites()))
+	for _, suite := range tls.CipherSuites() {
+		supported[suite.Name] = struct{}{}
+	}
+
+	tlsConfigFn, unsupportedProfileCiphers := tlspkg.NewTLSConfigFromProfile(spec)
+	tlsConfig := &tls.Config{}
+	tlsConfigFn(tlsConfig)
+
+	names := make([]string, 0, len(tlsConfig.CipherSuites))
+	unsupported := make([]string, 0)
+	codeIndex := 0
+	unsupportedIndex := 0
+	for _, cipher := range spec.Ciphers {
+		if unsupportedIndex < len(unsupportedProfileCiphers) && unsupportedProfileCiphers[unsupportedIndex] == cipher {
+			unsupported = append(unsupported, cipher)
+			unsupportedIndex++
+			continue
+		}
+		if codeIndex >= len(tlsConfig.CipherSuites) {
+			unsupported = append(unsupported, cipher)
+			continue
+		}
+
+		name := tls.CipherSuiteName(tlsConfig.CipherSuites[codeIndex])
+		codeIndex++
+		if _, ok := supported[name]; ok {
+			names = append(names, name)
+			continue
+		}
+		unsupported = append(unsupported, cipher)
+	}
+	return names, unsupported
+}
+
+func hasTLS12CipherSuite(names []string) bool {
+	for _, suite := range tls.CipherSuites() {
+		for _, name := range names {
+			if suite.Name != name {
+				continue
+			}
+			for _, version := range suite.SupportedVersions {
+				if version == tls.VersionTLS12 {
+					return true
+				}
+			}
+		}
+	}
+	return false
 }
 
 // Resolve fetches the cluster TLS profile and adherence policy,
