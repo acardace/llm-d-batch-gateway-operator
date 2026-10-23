@@ -690,6 +690,9 @@ func validateSpec(gw *batchv1alpha1.LLMBatchGateway) error {
 	if gw.Spec.Processor.AsyncConfig == nil {
 		return errors.New("asyncConfig is required when spec.processor.dispatchMode set to \"async\"")
 	}
+	if gw.Spec.Processor.AsyncConfig.Redis != nil && gw.Spec.Processor.AsyncConfig.SQL != nil {
+		return errors.New("processor.asyncConfig.redis and processor.asyncConfig.sql are mutually exclusive")
+	}
 	if gw.Spec.Processor.AsyncConfig.ResultPollTimeout == "" {
 		return errors.New("processor.asyncConfig.resultPollTimeout is required when processor.dispatchMode is \"async\"")
 	}

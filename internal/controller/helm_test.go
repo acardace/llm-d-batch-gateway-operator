@@ -1424,6 +1424,23 @@ func TestSpecToHelmValues_AsyncDispatchModels(t *testing.T) {
 	}
 }
 
+func TestSpecToHelmValues_AsyncDispatchSQLTransport(t *testing.T) {
+	g := minimalGateway()
+	g.Spec.Processor.DispatchMode = dispatchModeAsync
+	g.Spec.Processor.AsyncConfig = &batchv1alpha1.AsyncProcessorSpec{
+		ResultPollTimeout: "45s",
+		SQL:               &batchv1alpha1.AsyncSQLSpec{},
+	}
+
+	vals := specToBatchHelmValues(g, testSecretName(g), testImages(), tlspkg.ProfileValues{})
+	processor := vals["processor"].(map[string]interface{})
+	config := processor["config"].(map[string]interface{})
+	asyncDispatch := config["asyncDispatch"].(map[string]any)
+	if got := asyncDispatch["transport"]; got != "sql" {
+		t.Errorf("asyncDispatch.transport = %v, want sql", got)
+	}
+}
+
 func TestSpecToHelmValues_AsyncDispatchResultPollTimeout_Unset(t *testing.T) {
 	gw := minimalGateway()
 

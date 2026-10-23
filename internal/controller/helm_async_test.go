@@ -192,6 +192,32 @@ func TestSpecToAsyncHelmValues_TransportQueues(t *testing.T) {
 	}
 }
 
+func TestSpecToAsyncHelmValues_SQLTransport(t *testing.T) {
+	g := minimalAsyncGateway()
+	g.Spec.Processor.AsyncConfig.Redis = nil
+	g.Spec.Processor.AsyncConfig.SQL = &batchv1alpha1.AsyncSQLSpec{
+		QueuesConfig: []batchv1alpha1.AsyncQueueConfig{{Name: "request-sql"}},
+	}
+
+	vals := specToAsyncHelmValues(g, testSecretName(g), testImages())
+	ap := vals["ap"].(map[string]any)
+	if got := ap["transport"]; got != "sql" {
+		t.Fatalf("transport = %v, want sql", got)
+	}
+	transportConfig := ap["transportConfig"].(map[string]any)
+	urlSecret := transportConfig["urlSecret"].(map[string]any)
+	if got := urlSecret["key"]; got != "postgresql-url" {
+		t.Errorf("urlSecret.key = %v, want postgresql-url", got)
+	}
+	if got := transportConfig["queues"].([]any)[0].(map[string]any)["queue_name"]; got != "request-sql" {
+		t.Errorf("queue_name = %v, want request-sql", got)
+	}
+	env := ap["env"].([]any)[0].(map[string]any)
+	if got := env["name"]; got != "SQL_URL" {
+		t.Errorf("env name = %v, want SQL_URL", got)
+	}
+}
+
 func TestSpecToAsyncHelmValues_Monitoring(t *testing.T) {
 	gw := minimalAsyncGateway()
 	gw.Spec.Monitoring = &batchv1alpha1.MonitoringSpec{Enabled: true}
@@ -448,4 +474,67 @@ func TestRenderAsyncChart(t *testing.T) {
 			t.Error("no Deployment found in rendered objects")
 		}
 	})
+}
+
+func TestRenderAsyncChart_SQLTransport(t *testing.T) {
+	renderer, err := NewHelmRenderer("../../llm-d-async/charts/llm-d-async", testImages(), tlspkg.ProfileValues{})
+	if err != nil {
+		t.Fatalf("NewHelmRenderer() error: %v", err)
+	}
+
+	g := minimalAsyncGateway()
+	g.Spec.Processor.AsyncConfig.Redis = nil
+	g.Spec.Processor.AsyncConfig.SQL = &batchv1alpha1.AsyncSQLSpec{
+		QueuesConfig: []batchv1alpha1.AsyncQueueConfig{{Name: "request-sql"}},
+	}
+	objects, err := renderer.RenderAsyncChart(g, testSecretName(g))
+	if err != nil {
+		t.Fatalf("RenderAsyncChart() SQL error: %v", err)
+	}
+
+	for _, obj := range objects {
+		if obj.GetKind() != "Deployment" {
+			continue
+		}
+		containers, found, err := unstructured.NestedSlice(obj.Object, "spec", "template", "spec", "containers")
+		if err != nil || !found || len(containers) == 0 {
+			t.Fatalf("SQL deployment containers not found: %v", err)
+		}
+		container := containers[0].(map[string]any)
+		args, _, _ := unstructured.NestedStringSlice(container, "args")
+		if !containsString(args, "--transport=sql") {
+			t.Fatalf("SQL deployment args = %v, want --transport=sql", args)
+		}
+		env, _, _ := unstructured.NestedSlice(container, "env")
+		if !hasEnvSecret(env, "SQL_URL", testSecretName(g), "postgresql-url") {
+			t.Fatalf("SQL_URL env is not wired to the PostgreSQL Secret: %v", env)
+		}
+		return
+	}
+	t.Fatal("SQL deployment not found")
+}
+
+func containsString(values []string, want string) bool {
+	for _, value := range values {
+		if value == want {
+			return true
+		}
+	}
+	return false
+}
+
+func hasEnvSecret(env []any, name, secretName, secretKey string) bool {
+	for _, raw := range env {
+		entry := raw.(map[string]any)
+		if entry["name"] != name {
+			continue
+		}
+		valueFrom, ok := entry["valueFrom"].(map[string]any)
+		if !ok {
+			return false
+		}
+		secretRef, ok := valueFrom["secretKeyRef"].(map[string]any)
+		return ok && secretRef["name"] == secretName && secretRef["key"] == secretKey
+	}
+	return false
 }

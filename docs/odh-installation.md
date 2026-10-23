@@ -2,7 +2,7 @@
 
 Deploy LLM Batch Gateway through the ODH platform on OpenShift.
 
-For upgrades, read the [Async Dispatch and Core Storage Migration](async-default-migration.md) guide first. It covers the separate PostgreSQL migration for Batch Gateway metadata and the Redis requirement for async queues.
+For upgrades, read the [Async Dispatch and Core Storage Migration](async-default-migration.md) guide first. It covers the separate PostgreSQL migration for Batch Gateway metadata and the transport choice for async queues.
 
 ## Architecture
 
@@ -26,7 +26,7 @@ opendatahub-operator (platform orchestrator)
 - `oc` / `kubectl` CLI connected to the cluster
 - `helm` (for installing PostgreSQL and optional Redis test dependencies)
 - `kubectl` (for installing the SeaweedFS test dependency)
-- External dependencies for LLMBatchGateway: PostgreSQL and S3-compatible storage. Async dispatch also needs Redis for llm-d-async queues.
+- External dependencies for LLMBatchGateway: PostgreSQL and S3-compatible storage. Async dispatch needs either Redis/Valkey for the default sorted-set transport or PostgreSQL for the experimental SQL transport.
 
 ## Installation
 
@@ -102,7 +102,7 @@ status:
 
 ### Step 2: Set up external dependencies
 
-LLMBatchGateway requires PostgreSQL and S3-compatible storage. Async dispatch also requires Redis for llm-d-async queues. For synchronous testing, use the provided script:
+LLMBatchGateway requires PostgreSQL and S3-compatible storage. Async dispatch uses either Redis/Valkey sorted-set or PostgreSQL SQL queues. For synchronous testing, use the provided script:
 
 ```bash
 export NAMESPACE=batch-api
@@ -116,7 +116,7 @@ setup script requires both values and stores the secret key in
 `batch-gateway-secrets`. For production, use credentials from a managed Secret
 and do not use the local SeaweedFS setup script.
 
-For async testing, install Redis as well:
+For Redis-backed async testing, install Redis as well:
 
 ```bash
 INSTALL_REDIS=true bash hack/setup-prereqs.sh
@@ -129,7 +129,7 @@ This creates the `$NAMESPACE` namespace and installs:
 
 The async setup also installs Redis at `redis-master.$NAMESPACE.svc.cluster.local:6379` and adds its URL to `batch-gateway-secrets`.
 
-For production, replace PostgreSQL and S3 with your own endpoints. Configure Redis only when using async dispatch.
+For production, replace PostgreSQL and S3 with your own endpoints. Configure Redis only when using the Redis async transport. For SQL async transport, ensure the referenced Secret contains `postgresql-url` and configure `spec.processor.asyncConfig.sql`.
 
 ### Step 3: Create LLMBatchGateway CR
 

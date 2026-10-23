@@ -91,6 +91,15 @@ func TestValidateSpecRejectsQueueNamesOutsideAsyncMode(t *testing.T) {
 	})
 }
 
+func TestValidateSpecRejectsBothAsyncTransports(t *testing.T) {
+	g := minimalAsyncGateway()
+	g.Spec.Processor.AsyncConfig.SQL = &batchv1alpha1.AsyncSQLSpec{}
+
+	if err := validateSpec(g); err == nil || !strings.Contains(err.Error(), "mutually exclusive") {
+		t.Fatalf("validateSpec() error = %v, want mutually exclusive transport error", err)
+	}
+}
+
 func TestLLMBatchGatewayResumableFinalizeTimeoutValidation(t *testing.T) {
 	ctx := context.Background()
 	gw := newTestGateway("test-resumable-finalize-timeout")

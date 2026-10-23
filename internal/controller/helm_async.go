@@ -1,6 +1,8 @@
 package controller
 
 import (
+	"sort"
+
 	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
 
 	batchv1alpha1 "github.com/opendatahub-io/llm-d-batch-gateway-operator/api/v1alpha1"
@@ -89,27 +91,54 @@ func specToAsyncHelmValues(gw *batchv1alpha1.LLMBatchGateway, secretName string,
 			}}
 		}
 
-		queues := make([]any, 0, len(queueConfigs))
-		for _, q := range queueConfigs {
-			qm := map[string]any{
-				"queue_name": q.Name,
-			}
-			setIfNotEmpty(qm, "worker_pool_id", q.WorkerPoolID)
-			queueGatewayURL := q.IGWBaseURL
-			if queueGatewayURL == "" {
-				queueGatewayURL = gatewayURL
-			}
-			setIfNotEmpty(qm, "igw_base_url", queueGatewayURL)
-			setIfNotEmpty(qm, "request_path_url", q.RequestPathURL)
-			setIfNotEmpty(qm, "gate_type", q.GateType)
-			if len(q.GateParams) > 0 {
-				qm["gate_params"] = toStringInterfaceMap(q.GateParams)
-			}
-			queues = append(queues, qm)
-		}
-		transportConfig["queues"] = queues
+		transportConfig["queues"] = asyncQueueValues(queueConfigs, gatewayURL)
 		ap["transport"] = "redis-sortedset"
 		ap["transportConfig"] = transportConfig
+	} else if ac.SQL != nil {
+		gatewayURL := ""
+		if ac.InferenceGateway != nil {
+			gatewayURL = ac.InferenceGateway.URL
+		}
+		transportConfig := map[string]any{
+			"urlSecret": map[string]any{
+				"name": secretName,
+				"key":  "postgresql-url",
+			},
+		}
+		if ac.SQL.PollIntervalMs != nil {
+			transportConfig["poll_interval_ms"] = int64(*ac.SQL.PollIntervalMs)
+		}
+		if ac.SQL.BatchSize != nil {
+			transportConfig["batch_size"] = int64(*ac.SQL.BatchSize)
+		}
+		if ac.SQL.ResultBatchSize != nil {
+			transportConfig["result_batch_size"] = int64(*ac.SQL.ResultBatchSize)
+		}
+		if ac.SQL.LeaseTTLSeconds != nil {
+			transportConfig["lease_ttl_seconds"] = int64(*ac.SQL.LeaseTTLSeconds)
+		}
+		if ac.SQL.HandoffTimeoutSeconds != nil {
+			transportConfig["handoff_timeout_seconds"] = int64(*ac.SQL.HandoffTimeoutSeconds)
+		}
+		queueConfigs := ac.SQL.QueuesConfig
+		if len(queueConfigs) == 0 {
+			queueConfigs = sqlQueueDefaults(gw)
+		}
+		transportConfig["queues"] = asyncQueueValues(queueConfigs, gatewayURL)
+		ap["transport"] = "sql"
+		ap["transportConfig"] = transportConfig
+		// Older vendored async charts pass transportConfig through but only
+		// inject REDIS_URL. Keep SQL credentials out of chart args by also
+		// wiring the shared Secret through the SQL_URL environment variable.
+		ap["env"] = []any{map[string]any{
+			"name": "SQL_URL",
+			"valueFrom": map[string]any{
+				"secretKeyRef": map[string]any{
+					"name": secretName,
+					"key":  "postgresql-url",
+				},
+			},
+		}}
 	}
 
 	if len(ac.WorkerPools) > 0 {
@@ -219,4 +248,43 @@ func specToAsyncHelmValues(gw *batchv1alpha1.LLMBatchGateway, secretName string,
 		"nameOverride": "async-processor",
 		"ap":           ap,
 	}
+}
+
+func asyncQueueValues(queueConfigs []batchv1alpha1.AsyncQueueConfig, gatewayURL string) []any {
+	queues := make([]any, 0, len(queueConfigs))
+	for _, q := range queueConfigs {
+		qm := map[string]any{"queue_name": q.Name}
+		setIfNotEmpty(qm, "worker_pool_id", q.WorkerPoolID)
+		queueGatewayURL := q.IGWBaseURL
+		if queueGatewayURL == "" {
+			queueGatewayURL = gatewayURL
+		}
+		setIfNotEmpty(qm, "igw_base_url", queueGatewayURL)
+		setIfNotEmpty(qm, "request_path_url", q.RequestPathURL)
+		setIfNotEmpty(qm, "gate_type", q.GateType)
+		if len(q.GateParams) > 0 {
+			qm["gate_params"] = toStringInterfaceMap(q.GateParams)
+		}
+		queues = append(queues, qm)
+	}
+	return queues
+}
+
+func sqlQueueDefaults(gw *batchv1alpha1.LLMBatchGateway) []batchv1alpha1.AsyncQueueConfig {
+	models := make([]string, 0, len(gw.Spec.Processor.ModelGateways))
+	for model := range gw.Spec.Processor.ModelGateways {
+		models = append(models, model)
+	}
+	sort.Strings(models)
+
+	queues := make([]batchv1alpha1.AsyncQueueConfig, 0, len(models))
+	for _, model := range models {
+		gateway := gw.Spec.Processor.ModelGateways[model]
+		name := gateway.RequestQueueName
+		if name == "" {
+			name = "llm-d-async:requests:" + gateway.InferencePoolName
+		}
+		queues = append(queues, batchv1alpha1.AsyncQueueConfig{Name: name})
+	}
+	return queues
 }
