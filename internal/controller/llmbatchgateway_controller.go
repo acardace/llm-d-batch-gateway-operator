@@ -718,7 +718,7 @@ func validateSpec(gw *batchv1alpha1.LLMBatchGateway) error {
 				actual = asyncResultQueueName(gateway.InferencePoolName)
 			}
 			if actual != expected {
-				return fmt.Errorf("processor.modelGateways[%s].resultQueueName resolves to %q, but the SQL dispatcher uses one result queue (%q); set matching resultQueueName values", model, actual, expected)
+				return fmt.Errorf("processor.modelGateways[%s].resultQueueName resolves to %q, but the SQL dispatcher has one default result queue (%q); set matching resultQueueName values", model, actual, expected)
 			}
 		}
 	}

@@ -271,9 +271,12 @@ func asyncQueueValues(queueConfigs []batchv1alpha1.AsyncQueueConfig, gatewayURL 
 	return queues
 }
 
-// sqlResultQueueName returns the single result queue used by the SQL dispatcher.
-// The llm-d-async SQL transport has one result_queue_name for all request
-// queues, so every model gateway must resolve to the same result queue.
+// sqlResultQueueName returns the default result queue used by the SQL dispatcher.
+// The dispatcher applies it only when a request does not carry its own result
+// routing. The Batch Gateway processor stamps every request with
+// <base>:<consumerID>, which the dispatcher honors per request. The operator
+// still derives one base queue and requires model gateways to agree on it so the
+// dispatcher's fallback is unambiguous.
 func sqlResultQueueName(gw *batchv1alpha1.LLMBatchGateway) string {
 	models := make([]string, 0, len(gw.Spec.Processor.ModelGateways))
 	for model := range gw.Spec.Processor.ModelGateways {

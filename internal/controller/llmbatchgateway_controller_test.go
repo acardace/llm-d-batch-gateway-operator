@@ -111,8 +111,8 @@ func TestValidateSpecRejectsSQLMultipleResultQueues(t *testing.T) {
 		"model-b": {InferencePoolName: "pool-b"},
 	}
 
-	if err := validateSpec(g); err == nil || !strings.Contains(err.Error(), "one result queue") {
-		t.Fatalf("validateSpec() error = %v, want SQL single result queue error", err)
+	if err := validateSpec(g); err == nil || !strings.Contains(err.Error(), "one default result queue") {
+		t.Fatalf("validateSpec() error = %v, want SQL default result queue error", err)
 	}
 }
 
