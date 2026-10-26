@@ -124,7 +124,7 @@ func TestSpecToAsyncHelmValues_TransportQueues(t *testing.T) {
 	gw.Spec.Processor.AsyncConfig.Redis.BatchSize = &batchSize
 	gw.Spec.Processor.AsyncConfig.Redis.QueuesConfig = []batchv1alpha1.AsyncQueueConfig{
 		{
-			Name:           "llm-d-async:requests:pool-a",
+			Name:           asyncRequestQueueName("pool-a"),
 			WorkerPoolID:   "pool-a-workers",
 			IGWBaseURL:     "http://epp-pool-a:8081",
 			RequestPathURL: "/v1/completions",
@@ -132,7 +132,7 @@ func TestSpecToAsyncHelmValues_TransportQueues(t *testing.T) {
 			GateParams:     map[string]string{"pool": "pool-a"},
 		},
 		{
-			Name:         "llm-d-async:requests:pool-b",
+			Name:         asyncRequestQueueName("pool-b"),
 			WorkerPoolID: "pool-b-workers",
 		},
 	}
@@ -164,8 +164,8 @@ func TestSpecToAsyncHelmValues_TransportQueues(t *testing.T) {
 	if !ok {
 		t.Fatal("transportConfig.queues[0] is not a map")
 	}
-	if got := queue["queue_name"]; got != "llm-d-async:requests:pool-a" {
-		t.Errorf("queue_name = %v, want llm-d-async:requests:pool-a", got)
+	if got := queue["queue_name"]; got != asyncRequestQueueName("pool-a") {
+		t.Errorf("queue_name = %v, want %s", got, asyncRequestQueueName("pool-a"))
 	}
 	if got := queue["worker_pool_id"]; got != "pool-a-workers" {
 		t.Errorf("worker_pool_id = %v, want pool-a-workers", got)
@@ -212,9 +212,8 @@ func TestSpecToAsyncHelmValues_SQLTransport(t *testing.T) {
 	if got := transportConfig["queues"].([]any)[0].(map[string]any)["queue_name"]; got != "request-sql" {
 		t.Errorf("queue_name = %v, want request-sql", got)
 	}
-	env := ap["env"].([]any)[0].(map[string]any)
-	if got := env["name"]; got != "SQL_URL" {
-		t.Errorf("env name = %v, want SQL_URL", got)
+	if _, ok := ap["env"]; ok {
+		t.Error("ap.env should not be set; the chart injects SQL_URL from transportConfig.urlSecret")
 	}
 }
 

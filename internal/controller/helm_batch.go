@@ -229,6 +229,9 @@ func specToBatchHelmValues(gw *batchv1alpha1.LLMBatchGateway, secretName string,
 		}
 		if gw.Spec.Processor.AsyncConfig.SQL != nil {
 			asyncDispatch["transport"] = "sql"
+			if mc := gw.Spec.Processor.AsyncConfig.SQL.MaxConnections; mc != nil {
+				asyncDispatch["maxConnections"] = int64(*mc)
+			}
 		} else if gw.Spec.Processor.AsyncConfig.Redis != nil {
 			asyncDispatch["transport"] = "redis-sortedset"
 		}

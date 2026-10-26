@@ -457,6 +457,56 @@ func TestRenderBatchChart_ResumableDefaults(t *testing.T) {
 	t.Fatal("processor ConfigMap not rendered")
 }
 
+func TestRenderBatchChart_AsyncDispatchSQLMaxConnectionsZero(t *testing.T) {
+	renderer, err := NewHelmRenderer("../../batch-gateway/charts/batch-gateway", testImages(), tlspkg.ProfileValues{})
+	if err != nil {
+		t.Fatalf("NewHelmRenderer() error: %v", err)
+	}
+
+	zero := int32(0)
+	gw := minimalGateway()
+	gw.Spec.Processor.DispatchMode = dispatchModeAsync
+	gw.Spec.Processor.GlobalInferenceGateway = nil
+	gw.Spec.Processor.ModelGateways = map[string]batchv1alpha1.InferenceGatewaySpec{
+		"model-a": {
+			InferencePoolName: "pool-a",
+			RequestQueueName:  asyncRequestQueueName("pool-a"),
+			ResultQueueName:   asyncResultQueueName("pool-a"),
+		},
+	}
+	gw.Spec.Processor.AsyncConfig = &batchv1alpha1.AsyncProcessorSpec{
+		ResultPollTimeout: "45s",
+		SQL:               &batchv1alpha1.AsyncSQLSpec{MaxConnections: &zero},
+	}
+
+	objects, err := renderer.RenderBatchChart(gw, testSecretName(gw))
+	if err != nil {
+		t.Fatalf("RenderBatchChart() error: %v", err)
+	}
+
+	for _, obj := range objects {
+		if obj.GetKind() != "ConfigMap" || !strings.Contains(obj.GetName(), "processor") {
+			continue
+		}
+		data, found, err := unstructured.NestedString(obj.Object, "data", "config.yaml")
+		if err != nil {
+			t.Fatalf("reading processor ConfigMap data: %v", err)
+		}
+		if !found {
+			t.Fatal("processor ConfigMap has no data.config.yaml")
+		}
+		if !strings.Contains(data, `transport: "sql"`) {
+			t.Fatalf("processor ConfigMap transport = %q, want sql", data)
+		}
+		if !strings.Contains(data, "max_connections: 0") {
+			t.Fatalf("processor ConfigMap max_connections = %q, want 0 preserved", data)
+		}
+		return
+	}
+
+	t.Fatal("processor ConfigMap not rendered")
+}
+
 func TestRenderBatchChart_WithMonitoring(t *testing.T) {
 	renderer, err := NewHelmRenderer("../../batch-gateway/charts/batch-gateway", testImages(), tlspkg.ProfileValues{})
 	if err != nil {
@@ -1386,8 +1436,8 @@ func TestSpecToHelmValues_AsyncDispatchModels(t *testing.T) {
 		"model-a": {
 			InferencePoolName:  "pool-a",
 			InferenceObjective: "batch-a",
-			RequestQueueName:   "llm-d-async:requests:pool-a",
-			ResultQueueName:    "llm-d-async:results:pool-a",
+			RequestQueueName:   asyncRequestQueueName("pool-a"),
+			ResultQueueName:    asyncResultQueueName("pool-a"),
 		},
 	}
 	gw.Spec.Processor.AsyncConfig = &batchv1alpha1.AsyncProcessorSpec{
@@ -1413,11 +1463,11 @@ func TestSpecToHelmValues_AsyncDispatchModels(t *testing.T) {
 	if got := model["inferenceObjective"]; got != "batch-a" {
 		t.Errorf("asyncDispatch.models.model-a.inferenceObjective = %v, want batch-a", got)
 	}
-	if got := model["requestQueueName"]; got != "llm-d-async:requests:pool-a" {
-		t.Errorf("asyncDispatch.models.model-a.requestQueueName = %v", got)
+	if got := model["requestQueueName"]; got != asyncRequestQueueName("pool-a") {
+		t.Errorf("asyncDispatch.models.model-a.requestQueueName = %v, want %s", got, asyncRequestQueueName("pool-a"))
 	}
-	if got := model["resultQueueName"]; got != "llm-d-async:results:pool-a" {
-		t.Errorf("asyncDispatch.models.model-a.resultQueueName = %v", got)
+	if got := model["resultQueueName"]; got != asyncResultQueueName("pool-a") {
+		t.Errorf("asyncDispatch.models.model-a.resultQueueName = %v, want %s", got, asyncResultQueueName("pool-a"))
 	}
 	if _, ok := config["modelGateways"]; ok {
 		t.Error("processor.config.modelGateways should not be rendered in async mode")
@@ -1438,6 +1488,46 @@ func TestSpecToHelmValues_AsyncDispatchSQLTransport(t *testing.T) {
 	asyncDispatch := config["asyncDispatch"].(map[string]any)
 	if got := asyncDispatch["transport"]; got != "sql" {
 		t.Errorf("asyncDispatch.transport = %v, want sql", got)
+	}
+}
+
+func TestSpecToHelmValues_AsyncDispatchSQLMaxConnections(t *testing.T) {
+	zero := int32(0)
+	eight := int32(8)
+
+	tests := []struct {
+		name      string
+		maxConns  *int32
+		want      any
+		wantValue bool
+	}{
+		{name: "unset uses chart default", maxConns: nil},
+		{name: "explicit zero is preserved", maxConns: &zero, want: int64(0), wantValue: true},
+		{name: "explicit eight", maxConns: &eight, want: int64(8), wantValue: true},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			g := minimalGateway()
+			g.Spec.Processor.DispatchMode = dispatchModeAsync
+			g.Spec.Processor.AsyncConfig = &batchv1alpha1.AsyncProcessorSpec{
+				ResultPollTimeout: "45s",
+				SQL:               &batchv1alpha1.AsyncSQLSpec{MaxConnections: tt.maxConns},
+			}
+
+			vals := specToBatchHelmValues(g, testSecretName(g), testImages(), tlspkg.ProfileValues{})
+			processor := vals["processor"].(map[string]interface{})
+			config := processor["config"].(map[string]interface{})
+			asyncDispatch := config["asyncDispatch"].(map[string]any)
+
+			got, ok := asyncDispatch["maxConnections"]
+			if ok != tt.wantValue {
+				t.Fatalf("asyncDispatch.maxConnections presence = %v, want %v", ok, tt.wantValue)
+			}
+			if tt.wantValue && got != tt.want {
+				t.Errorf("asyncDispatch.maxConnections = %v, want %v", got, tt.want)
+			}
+		})
 	}
 }
 

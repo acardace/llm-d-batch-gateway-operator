@@ -921,6 +921,16 @@ spec:
                             format: int32
                             minimum: 1
                             type: integer
+                          maxConnections:
+                            description: |-
+                              MaxConnections caps the SQL connection pool for each Batch Gateway
+                              processor replica (async_dispatch.max_connections). It is separate from
+                              the async processor dispatcher's own SQL pool.
+                              When omitted, the chart default (8) applies. An explicit 0 is rendered
+                              as 0 and rejected by the processor's configuration validation.
+                            format: int32
+                            minimum: 0
+                            type: integer
                           pollIntervalMs:
                             default: 1000
                             description: PollIntervalMs is the interval in milliseconds

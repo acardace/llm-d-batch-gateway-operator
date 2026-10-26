@@ -158,9 +158,16 @@ or:
 ```yaml
 asyncConfig:
   sql:                 # PostgreSQL SQL transport
+    maxConnections: 8  # per processor replica; omit for the chart default
     queuesConfig:
       - name: llm-d-async:requests:llama-pool
 ```
+
+`maxConnections` caps the Batch Gateway processor's SQL pool per replica. It is
+separate from the llm-d-async dispatcher's own pool
+(`ap.transportConfig.max_connections`, default 32). Budget both against
+PostgreSQL's `max_connections`. An explicit `0` is preserved and rejected by the
+processor validation rather than silently treated as the default.
 
 The Batch Gateway and llm-d-async dispatcher must use the same transport and
 matching queue names. Do not configure both `redis` and `sql`.

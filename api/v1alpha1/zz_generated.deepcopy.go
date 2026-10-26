@@ -282,6 +282,11 @@ func (in *AsyncSQLSpec) DeepCopyInto(out *AsyncSQLSpec) {
 		*out = new(int32)
 		**out = **in
 	}
+	if in.MaxConnections != nil {
+		in, out := &in.MaxConnections, &out.MaxConnections
+		*out = new(int32)
+		**out = **in
+	}
 	if in.ResultBatchSize != nil {
 		in, out := &in.ResultBatchSize, &out.ResultBatchSize
 		*out = new(int32)

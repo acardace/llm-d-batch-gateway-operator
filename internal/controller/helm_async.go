@@ -8,6 +8,16 @@ import (
 	batchv1alpha1 "github.com/opendatahub-io/llm-d-batch-gateway-operator/api/v1alpha1"
 )
 
+const asyncQueuePrefix = "llm-d-async:"
+
+func asyncRequestQueueName(pool string) string {
+	return asyncQueuePrefix + "requests:" + pool
+}
+
+func asyncResultQueueName(pool string) string {
+	return asyncQueuePrefix + "results:" + pool
+}
+
 func (h *HelmRenderer) RenderAsyncChart(gw *batchv1alpha1.LLMBatchGateway, secretName string) ([]*unstructured.Unstructured, error) {
 	return h.renderChart(gw, specToAsyncHelmValues(gw, secretName, h.images), func(obj *unstructured.Unstructured) {
 		// async does not use this label to indicate component name, workaround to append it for update status
@@ -127,18 +137,6 @@ func specToAsyncHelmValues(gw *batchv1alpha1.LLMBatchGateway, secretName string,
 		transportConfig["queues"] = asyncQueueValues(queueConfigs, gatewayURL)
 		ap["transport"] = "sql"
 		ap["transportConfig"] = transportConfig
-		// Older vendored async charts pass transportConfig through but only
-		// inject REDIS_URL. Keep SQL credentials out of chart args by also
-		// wiring the shared Secret through the SQL_URL environment variable.
-		ap["env"] = []any{map[string]any{
-			"name": "SQL_URL",
-			"valueFrom": map[string]any{
-				"secretKeyRef": map[string]any{
-					"name": secretName,
-					"key":  "postgresql-url",
-				},
-			},
-		}}
 	}
 
 	if len(ac.WorkerPools) > 0 {
@@ -282,7 +280,7 @@ func sqlQueueDefaults(gw *batchv1alpha1.LLMBatchGateway) []batchv1alpha1.AsyncQu
 		gateway := gw.Spec.Processor.ModelGateways[model]
 		name := gateway.RequestQueueName
 		if name == "" {
-			name = "llm-d-async:requests:" + gateway.InferencePoolName
+			name = asyncRequestQueueName(gateway.InferencePoolName)
 		}
 		queues = append(queues, batchv1alpha1.AsyncQueueConfig{Name: name})
 	}
