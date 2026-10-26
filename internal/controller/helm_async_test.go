@@ -194,6 +194,10 @@ func TestSpecToAsyncHelmValues_TransportQueues(t *testing.T) {
 
 func TestSpecToAsyncHelmValues_SQLTransport(t *testing.T) {
 	g := minimalAsyncGateway()
+	g.Spec.Processor.GlobalInferenceGateway = nil
+	g.Spec.Processor.ModelGateways = map[string]batchv1alpha1.InferenceGatewaySpec{
+		"model-a": {InferencePoolName: "pool-a"},
+	}
 	g.Spec.Processor.AsyncConfig.Redis = nil
 	g.Spec.Processor.AsyncConfig.SQL = &batchv1alpha1.AsyncSQLSpec{
 		QueuesConfig: []batchv1alpha1.AsyncQueueConfig{{Name: "request-sql"}},
@@ -209,11 +213,37 @@ func TestSpecToAsyncHelmValues_SQLTransport(t *testing.T) {
 	if got := urlSecret["key"]; got != "postgresql-url" {
 		t.Errorf("urlSecret.key = %v, want postgresql-url", got)
 	}
+	if got := transportConfig["result_queue_name"]; got != asyncResultQueueName("pool-a") {
+		t.Errorf("result_queue_name = %v, want %s", got, asyncResultQueueName("pool-a"))
+	}
 	if got := transportConfig["queues"].([]any)[0].(map[string]any)["queue_name"]; got != "request-sql" {
 		t.Errorf("queue_name = %v, want request-sql", got)
 	}
 	if _, ok := ap["env"]; ok {
 		t.Error("ap.env should not be set; the chart injects SQL_URL from transportConfig.urlSecret")
+	}
+}
+
+func TestSpecToAsyncHelmValues_SQLTransportExplicitResultQueue(t *testing.T) {
+	g := minimalAsyncGateway()
+	g.Spec.Processor.GlobalInferenceGateway = nil
+	g.Spec.Processor.ModelGateways = map[string]batchv1alpha1.InferenceGatewaySpec{
+		"model-a": {
+			InferencePoolName: "pool-a",
+			RequestQueueName:  "request-sql",
+			ResultQueueName:   "result-sql",
+		},
+	}
+	g.Spec.Processor.AsyncConfig.Redis = nil
+	g.Spec.Processor.AsyncConfig.SQL = &batchv1alpha1.AsyncSQLSpec{}
+
+	vals := specToAsyncHelmValues(g, testSecretName(g), testImages())
+	transportConfig := vals["ap"].(map[string]any)["transportConfig"].(map[string]any)
+	if got := transportConfig["result_queue_name"]; got != "result-sql" {
+		t.Errorf("result_queue_name = %v, want result-sql", got)
+	}
+	if got := transportConfig["queues"].([]any)[0].(map[string]any)["queue_name"]; got != "request-sql" {
+		t.Errorf("queue_name = %v, want request-sql", got)
 	}
 }
 

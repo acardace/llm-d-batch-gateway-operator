@@ -100,6 +100,46 @@ func TestValidateSpecRejectsBothAsyncTransports(t *testing.T) {
 	}
 }
 
+func TestValidateSpecRejectsSQLMultipleResultQueues(t *testing.T) {
+	g := minimalAsyncGateway()
+	g.Spec.Processor.AsyncConfig.Redis = nil
+	g.Spec.Processor.AsyncConfig.SQL = &batchv1alpha1.AsyncSQLSpec{}
+	g.Spec.Processor.AsyncConfig.ResultPollTimeout = "30s"
+	g.Spec.Processor.GlobalInferenceGateway = nil
+	g.Spec.Processor.ModelGateways = map[string]batchv1alpha1.InferenceGatewaySpec{
+		"model-a": {InferencePoolName: "pool-a"},
+		"model-b": {InferencePoolName: "pool-b"},
+	}
+
+	if err := validateSpec(g); err == nil || !strings.Contains(err.Error(), "one result queue") {
+		t.Fatalf("validateSpec() error = %v, want SQL single result queue error", err)
+	}
+}
+
+func TestValidateSpecAllowsSQLSharedResultQueue(t *testing.T) {
+	g := minimalAsyncGateway()
+	g.Spec.Processor.AsyncConfig.Redis = nil
+	g.Spec.Processor.AsyncConfig.SQL = &batchv1alpha1.AsyncSQLSpec{}
+	g.Spec.Processor.AsyncConfig.ResultPollTimeout = "30s"
+	g.Spec.Processor.GlobalInferenceGateway = nil
+	g.Spec.Processor.ModelGateways = map[string]batchv1alpha1.InferenceGatewaySpec{
+		"model-a": {
+			InferencePoolName: "pool-a",
+			RequestQueueName:  "request-a",
+			ResultQueueName:   "result-shared",
+		},
+		"model-b": {
+			InferencePoolName: "pool-b",
+			RequestQueueName:  "request-b",
+			ResultQueueName:   "result-shared",
+		},
+	}
+
+	if err := validateSpec(g); err != nil {
+		t.Fatalf("validateSpec() error = %v, want nil", err)
+	}
+}
+
 func TestLLMBatchGatewayResumableFinalizeTimeoutValidation(t *testing.T) {
 	ctx := context.Background()
 	gw := newTestGateway("test-resumable-finalize-timeout")

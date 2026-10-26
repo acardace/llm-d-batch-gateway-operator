@@ -115,6 +115,9 @@ func specToAsyncHelmValues(gw *batchv1alpha1.LLMBatchGateway, secretName string,
 				"key":  "postgresql-url",
 			},
 		}
+		if resultQueue := sqlResultQueueName(gw); resultQueue != "" {
+			transportConfig["result_queue_name"] = resultQueue
+		}
 		if ac.SQL.PollIntervalMs != nil {
 			transportConfig["poll_interval_ms"] = int64(*ac.SQL.PollIntervalMs)
 		}
@@ -266,6 +269,25 @@ func asyncQueueValues(queueConfigs []batchv1alpha1.AsyncQueueConfig, gatewayURL 
 		queues = append(queues, qm)
 	}
 	return queues
+}
+
+// sqlResultQueueName returns the single result queue used by the SQL dispatcher.
+// The llm-d-async SQL transport has one result_queue_name for all request
+// queues, so every model gateway must resolve to the same result queue.
+func sqlResultQueueName(gw *batchv1alpha1.LLMBatchGateway) string {
+	models := make([]string, 0, len(gw.Spec.Processor.ModelGateways))
+	for model := range gw.Spec.Processor.ModelGateways {
+		models = append(models, model)
+	}
+	sort.Strings(models)
+	if len(models) == 0 {
+		return ""
+	}
+	gateway := gw.Spec.Processor.ModelGateways[models[0]]
+	if gateway.ResultQueueName != "" {
+		return gateway.ResultQueueName
+	}
+	return asyncResultQueueName(gateway.InferencePoolName)
 }
 
 func sqlQueueDefaults(gw *batchv1alpha1.LLMBatchGateway) []batchv1alpha1.AsyncQueueConfig {

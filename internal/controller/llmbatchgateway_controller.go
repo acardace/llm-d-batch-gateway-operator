@@ -710,6 +710,18 @@ func validateSpec(gw *batchv1alpha1.LLMBatchGateway) error {
 			return fmt.Errorf("processor.modelGateways[%s].requestQueueName and resultQueueName must both be set or both be empty", model)
 		}
 	}
+	if gw.Spec.Processor.AsyncConfig.SQL != nil {
+		expected := sqlResultQueueName(gw)
+		for model, gateway := range gw.Spec.Processor.ModelGateways {
+			actual := gateway.ResultQueueName
+			if actual == "" {
+				actual = asyncResultQueueName(gateway.InferencePoolName)
+			}
+			if actual != expected {
+				return fmt.Errorf("processor.modelGateways[%s].resultQueueName resolves to %q, but the SQL dispatcher uses one result queue (%q); set matching resultQueueName values", model, actual, expected)
+			}
+		}
+	}
 	return nil
 }
 
