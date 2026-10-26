@@ -1,6 +1,7 @@
 package controller
 
 import (
+	"slices"
 	"testing"
 
 	batchv1alpha1 "github.com/opendatahub-io/llm-d-batch-gateway-operator/api/v1alpha1"
@@ -531,7 +532,7 @@ func TestRenderAsyncChart_SQLTransport(t *testing.T) {
 		}
 		container := containers[0].(map[string]any)
 		args, _, _ := unstructured.NestedStringSlice(container, "args")
-		if !containsString(args, "--transport=sql") {
+		if !slices.Contains(args, "--transport=sql") {
 			t.Fatalf("SQL deployment args = %v, want --transport=sql", args)
 		}
 		env, _, _ := unstructured.NestedSlice(container, "env")
@@ -541,15 +542,6 @@ func TestRenderAsyncChart_SQLTransport(t *testing.T) {
 		return
 	}
 	t.Fatal("SQL deployment not found")
-}
-
-func containsString(values []string, want string) bool {
-	for _, value := range values {
-		if value == want {
-			return true
-		}
-	}
-	return false
 }
 
 func hasEnvSecret(env []any, name, secretName, secretKey string) bool {

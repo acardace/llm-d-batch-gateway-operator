@@ -271,6 +271,20 @@ func asyncQueueValues(queueConfigs []batchv1alpha1.AsyncQueueConfig, gatewayURL 
 	return queues
 }
 
+func sortedModelGateways(gw *batchv1alpha1.LLMBatchGateway) []batchv1alpha1.InferenceGatewaySpec {
+	models := make([]string, 0, len(gw.Spec.Processor.ModelGateways))
+	for model := range gw.Spec.Processor.ModelGateways {
+		models = append(models, model)
+	}
+	sort.Strings(models)
+
+	gateways := make([]batchv1alpha1.InferenceGatewaySpec, 0, len(models))
+	for _, model := range models {
+		gateways = append(gateways, gw.Spec.Processor.ModelGateways[model])
+	}
+	return gateways
+}
+
 // sqlResultQueueName returns the default result queue used by the SQL dispatcher.
 // The dispatcher applies it only when a request does not carry its own result
 // routing. The Batch Gateway processor stamps every request with
@@ -278,15 +292,11 @@ func asyncQueueValues(queueConfigs []batchv1alpha1.AsyncQueueConfig, gatewayURL 
 // still derives one base queue and requires model gateways to agree on it so the
 // dispatcher's fallback is unambiguous.
 func sqlResultQueueName(gw *batchv1alpha1.LLMBatchGateway) string {
-	models := make([]string, 0, len(gw.Spec.Processor.ModelGateways))
-	for model := range gw.Spec.Processor.ModelGateways {
-		models = append(models, model)
-	}
-	sort.Strings(models)
-	if len(models) == 0 {
+	gateways := sortedModelGateways(gw)
+	if len(gateways) == 0 {
 		return ""
 	}
-	gateway := gw.Spec.Processor.ModelGateways[models[0]]
+	gateway := gateways[0]
 	if gateway.ResultQueueName != "" {
 		return gateway.ResultQueueName
 	}
@@ -294,15 +304,9 @@ func sqlResultQueueName(gw *batchv1alpha1.LLMBatchGateway) string {
 }
 
 func sqlQueueDefaults(gw *batchv1alpha1.LLMBatchGateway) []batchv1alpha1.AsyncQueueConfig {
-	models := make([]string, 0, len(gw.Spec.Processor.ModelGateways))
-	for model := range gw.Spec.Processor.ModelGateways {
-		models = append(models, model)
-	}
-	sort.Strings(models)
-
-	queues := make([]batchv1alpha1.AsyncQueueConfig, 0, len(models))
-	for _, model := range models {
-		gateway := gw.Spec.Processor.ModelGateways[model]
+	gateways := sortedModelGateways(gw)
+	queues := make([]batchv1alpha1.AsyncQueueConfig, 0, len(gateways))
+	for _, gateway := range gateways {
 		name := gateway.RequestQueueName
 		if name == "" {
 			name = asyncRequestQueueName(gateway.InferencePoolName)
