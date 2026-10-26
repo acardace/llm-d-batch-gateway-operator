@@ -228,12 +228,12 @@ func specToBatchHelmValues(gw *batchv1alpha1.LLMBatchGateway, secretName string,
 			"resultPollTimeout": gw.Spec.Processor.AsyncConfig.ResultPollTimeout,
 		}
 		if gw.Spec.Processor.AsyncConfig.SQL != nil {
-			asyncDispatch["transport"] = "sql"
+			asyncDispatch["transport"] = asyncTransportSQL
 			if mc := gw.Spec.Processor.AsyncConfig.SQL.MaxConnections; mc != nil {
 				asyncDispatch["maxConnections"] = int64(*mc)
 			}
 		} else if gw.Spec.Processor.AsyncConfig.Redis != nil {
-			asyncDispatch["transport"] = "redis-sortedset"
+			asyncDispatch["transport"] = asyncTransportRedis
 		}
 		if len(gw.Spec.Processor.ModelGateways) > 0 {
 			models := map[string]any{}

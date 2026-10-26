@@ -721,6 +721,18 @@ func validateSpec(gw *batchv1alpha1.LLMBatchGateway) error {
 				return fmt.Errorf("processor.modelGateways[%s].resultQueueName resolves to %q, but the SQL dispatcher has one default result queue (%q); set matching resultQueueName values", model, actual, expected)
 			}
 		}
+		if len(gw.Spec.Processor.AsyncConfig.SQL.QueuesConfig) > 0 {
+			configured := make(map[string]struct{}, len(gw.Spec.Processor.AsyncConfig.SQL.QueuesConfig))
+			for _, queue := range gw.Spec.Processor.AsyncConfig.SQL.QueuesConfig {
+				configured[queue.Name] = struct{}{}
+			}
+			for model, gateway := range gw.Spec.Processor.ModelGateways {
+				requestQueue := sqlRequestQueueName(gateway)
+				if _, ok := configured[requestQueue]; !ok {
+					return fmt.Errorf("processor.asyncConfig.sql.queuesConfig is missing request queue %q required by processor.modelGateways[%s]", requestQueue, model)
+				}
+			}
+		}
 	}
 	return nil
 }

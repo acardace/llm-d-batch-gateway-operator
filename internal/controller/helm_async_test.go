@@ -64,7 +64,7 @@ func TestSpecToAsyncHelmValues(t *testing.T) {
 	})
 
 	t.Run("redis", func(t *testing.T) {
-		if got := ap["transport"]; got != "redis-sortedset" {
+		if got := ap["transport"]; got != asyncTransportRedis {
 			t.Errorf("transport = %v, want redis-sortedset", got)
 		}
 		transportConfig, ok := ap["transportConfig"].(map[string]any)
@@ -206,7 +206,7 @@ func TestSpecToAsyncHelmValues_SQLTransport(t *testing.T) {
 
 	vals := specToAsyncHelmValues(g, testSecretName(g), testImages())
 	ap := vals["ap"].(map[string]any)
-	if got := ap["transport"]; got != "sql" {
+	if got := ap["transport"]; got != asyncTransportSQL {
 		t.Fatalf("transport = %v, want sql", got)
 	}
 	transportConfig := ap["transportConfig"].(map[string]any)

@@ -588,7 +588,7 @@ func TestSpecToHelmValues_FSStorage(t *testing.T) {
 		Retry: &batchv1alpha1.FileRetrySpec{
 			MaxRetries:     ptr.To(int32(5)),
 			InitialBackoff: "500ms",
-			MaxBackoff:     "30s",
+			MaxBackoff:     testDuration30s,
 		},
 	}
 
@@ -986,7 +986,7 @@ func TestSpecToHelmValues_ProcessorConfig(t *testing.T) {
 		InputFileDiskBudgetPercent:     20,
 		ExtraEndpoints:                 ptr.To([]string{classifyEndpoint}),
 		DefaultOutputExpirationSeconds: 7200,
-		ProgressUpdateInterval:         "30s",
+		ProgressUpdateInterval:         testDuration30s,
 		EnablePprof:                    true,
 	}
 
@@ -1034,7 +1034,7 @@ func TestSpecToHelmValues_ProcessorConfig(t *testing.T) {
 	if got := config["defaultOutputExpirationSeconds"]; got != int64(7200) {
 		t.Errorf("defaultOutputExpirationSeconds = %v, want 7200", got)
 	}
-	if got := config["progressUpdateInterval"]; got != "30s" {
+	if got := config["progressUpdateInterval"]; got != testDuration30s {
 		t.Errorf("progressUpdateInterval = %v, want 30s", got)
 	}
 	if got := config["inputFileDiskBudgetPercent"]; got != int64(20) {
@@ -1486,7 +1486,7 @@ func TestSpecToHelmValues_AsyncDispatchSQLTransport(t *testing.T) {
 	processor := vals["processor"].(map[string]interface{})
 	config := processor["config"].(map[string]interface{})
 	asyncDispatch := config["asyncDispatch"].(map[string]any)
-	if got := asyncDispatch["transport"]; got != "sql" {
+	if got := asyncDispatch["transport"]; got != asyncTransportSQL {
 		t.Errorf("asyncDispatch.transport = %v, want sql", got)
 	}
 }

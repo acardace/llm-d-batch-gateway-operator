@@ -8,7 +8,11 @@ import (
 	batchv1alpha1 "github.com/opendatahub-io/llm-d-batch-gateway-operator/api/v1alpha1"
 )
 
-const asyncQueuePrefix = "llm-d-async:"
+const (
+	asyncQueuePrefix    = "llm-d-async:"
+	asyncTransportRedis = "redis-sortedset"
+	asyncTransportSQL   = "sql"
+)
 
 func asyncRequestQueueName(pool string) string {
 	return asyncQueuePrefix + "requests:" + pool
@@ -102,7 +106,7 @@ func specToAsyncHelmValues(gw *batchv1alpha1.LLMBatchGateway, secretName string,
 		}
 
 		transportConfig["queues"] = asyncQueueValues(queueConfigs, gatewayURL)
-		ap["transport"] = "redis-sortedset"
+		ap["transport"] = asyncTransportRedis
 		ap["transportConfig"] = transportConfig
 	} else if ac.SQL != nil {
 		gatewayURL := ""
@@ -138,7 +142,7 @@ func specToAsyncHelmValues(gw *batchv1alpha1.LLMBatchGateway, secretName string,
 			queueConfigs = sqlQueueDefaults(gw)
 		}
 		transportConfig["queues"] = asyncQueueValues(queueConfigs, gatewayURL)
-		ap["transport"] = "sql"
+		ap["transport"] = asyncTransportSQL
 		ap["transportConfig"] = transportConfig
 	}
 
@@ -303,15 +307,18 @@ func sqlResultQueueName(gw *batchv1alpha1.LLMBatchGateway) string {
 	return asyncResultQueueName(gateway.InferencePoolName)
 }
 
+func sqlRequestQueueName(gateway batchv1alpha1.InferenceGatewaySpec) string {
+	if gateway.RequestQueueName != "" {
+		return gateway.RequestQueueName
+	}
+	return asyncRequestQueueName(gateway.InferencePoolName)
+}
+
 func sqlQueueDefaults(gw *batchv1alpha1.LLMBatchGateway) []batchv1alpha1.AsyncQueueConfig {
 	gateways := sortedModelGateways(gw)
 	queues := make([]batchv1alpha1.AsyncQueueConfig, 0, len(gateways))
 	for _, gateway := range gateways {
-		name := gateway.RequestQueueName
-		if name == "" {
-			name = asyncRequestQueueName(gateway.InferencePoolName)
-		}
-		queues = append(queues, batchv1alpha1.AsyncQueueConfig{Name: name})
+		queues = append(queues, batchv1alpha1.AsyncQueueConfig{Name: sqlRequestQueueName(gateway)})
 	}
 	return queues
 }

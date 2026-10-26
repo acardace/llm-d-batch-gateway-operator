@@ -11,6 +11,11 @@ spec:
       bucket: llm-d-batch-gateway
       region: us-east-1
       endpoint: https://s3.example.com
+  apiServer:
+    replicas: 1
+  gc:
+    replicas: 1
+    interval: 30m
   processor:
     dispatchMode: async
     modelGateways:
@@ -22,6 +27,7 @@ spec:
       resultPollTimeout: 30s
       inferenceGateway:
         url: http://inference-gateway.default.svc:8000
+      prometheusURL: http://prometheus.default.svc.cluster.local:9090
       sql:
         # Per-replica SQL pool cap for the Batch Gateway processor.
         # Omit to use the chart default (8). An explicit 0 is passed through

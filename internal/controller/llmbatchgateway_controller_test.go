@@ -24,6 +24,7 @@ import (
 const (
 	llmBatchGatewayKind     = "LLMBatchGateway"
 	secretKind              = "Secret"
+	testDuration30s         = "30s"
 	testInferenceGatewayURL = "http://epp:8081"
 )
 
@@ -104,7 +105,7 @@ func TestValidateSpecRejectsSQLMultipleResultQueues(t *testing.T) {
 	g := minimalAsyncGateway()
 	g.Spec.Processor.AsyncConfig.Redis = nil
 	g.Spec.Processor.AsyncConfig.SQL = &batchv1alpha1.AsyncSQLSpec{}
-	g.Spec.Processor.AsyncConfig.ResultPollTimeout = "30s"
+	g.Spec.Processor.AsyncConfig.ResultPollTimeout = testDuration30s
 	g.Spec.Processor.GlobalInferenceGateway = nil
 	g.Spec.Processor.ModelGateways = map[string]batchv1alpha1.InferenceGatewaySpec{
 		"model-a": {InferencePoolName: "pool-a"},
@@ -120,7 +121,7 @@ func TestValidateSpecAllowsSQLSharedResultQueue(t *testing.T) {
 	g := minimalAsyncGateway()
 	g.Spec.Processor.AsyncConfig.Redis = nil
 	g.Spec.Processor.AsyncConfig.SQL = &batchv1alpha1.AsyncSQLSpec{}
-	g.Spec.Processor.AsyncConfig.ResultPollTimeout = "30s"
+	g.Spec.Processor.AsyncConfig.ResultPollTimeout = testDuration30s
 	g.Spec.Processor.GlobalInferenceGateway = nil
 	g.Spec.Processor.ModelGateways = map[string]batchv1alpha1.InferenceGatewaySpec{
 		"model-a": {
@@ -137,6 +138,99 @@ func TestValidateSpecAllowsSQLSharedResultQueue(t *testing.T) {
 
 	if err := validateSpec(g); err != nil {
 		t.Fatalf("validateSpec() error = %v, want nil", err)
+	}
+}
+
+func TestValidateSpecAllowsSQLRequestQueueCoverage(t *testing.T) {
+	g := minimalAsyncGateway()
+	g.Spec.Processor.AsyncConfig.Redis = nil
+	g.Spec.Processor.AsyncConfig.SQL = &batchv1alpha1.AsyncSQLSpec{
+		QueuesConfig: []batchv1alpha1.AsyncQueueConfig{
+			{Name: "request-a"},
+			{Name: "request-b"},
+		},
+	}
+	g.Spec.Processor.AsyncConfig.ResultPollTimeout = testDuration30s
+	g.Spec.Processor.GlobalInferenceGateway = nil
+	g.Spec.Processor.ModelGateways = map[string]batchv1alpha1.InferenceGatewaySpec{
+		"model-a": {
+			InferencePoolName: "pool-a",
+			RequestQueueName:  "request-a",
+			ResultQueueName:   "result-shared",
+		},
+		"model-b": {
+			InferencePoolName: "pool-b",
+			RequestQueueName:  "request-b",
+			ResultQueueName:   "result-shared",
+		},
+	}
+
+	if err := validateSpec(g); err != nil {
+		t.Fatalf("validateSpec() error = %v, want nil", err)
+	}
+}
+
+func TestValidateSpecAllowsSQLDefaultRequestQueueCoverage(t *testing.T) {
+	g := minimalAsyncGateway()
+	g.Spec.Processor.AsyncConfig.Redis = nil
+	g.Spec.Processor.AsyncConfig.SQL = &batchv1alpha1.AsyncSQLSpec{
+		QueuesConfig: []batchv1alpha1.AsyncQueueConfig{
+			{Name: asyncRequestQueueName("pool-a")},
+		},
+	}
+	g.Spec.Processor.AsyncConfig.ResultPollTimeout = testDuration30s
+	g.Spec.Processor.GlobalInferenceGateway = nil
+	g.Spec.Processor.ModelGateways = map[string]batchv1alpha1.InferenceGatewaySpec{
+		"model-a": {InferencePoolName: "pool-a"},
+	}
+
+	if err := validateSpec(g); err != nil {
+		t.Fatalf("validateSpec() error = %v, want nil", err)
+	}
+}
+
+func TestValidateSpecRejectsSQLMissingRequestQueue(t *testing.T) {
+	g := minimalAsyncGateway()
+	g.Spec.Processor.AsyncConfig.Redis = nil
+	g.Spec.Processor.AsyncConfig.SQL = &batchv1alpha1.AsyncSQLSpec{
+		QueuesConfig: []batchv1alpha1.AsyncQueueConfig{{Name: "request-a"}},
+	}
+	g.Spec.Processor.AsyncConfig.ResultPollTimeout = testDuration30s
+	g.Spec.Processor.GlobalInferenceGateway = nil
+	g.Spec.Processor.ModelGateways = map[string]batchv1alpha1.InferenceGatewaySpec{
+		"model-a": {
+			InferencePoolName: "pool-a",
+			RequestQueueName:  "request-a",
+			ResultQueueName:   "result-shared",
+		},
+		"model-b": {
+			InferencePoolName: "pool-b",
+			RequestQueueName:  "request-b",
+			ResultQueueName:   "result-shared",
+		},
+	}
+
+	err := validateSpec(g)
+	if err == nil || !strings.Contains(err.Error(), `missing request queue "request-b"`) {
+		t.Fatalf("validateSpec() error = %v, want missing SQL request queue error", err)
+	}
+}
+
+func TestValidateSpecRejectsSQLMissingDefaultRequestQueue(t *testing.T) {
+	g := minimalAsyncGateway()
+	g.Spec.Processor.AsyncConfig.Redis = nil
+	g.Spec.Processor.AsyncConfig.SQL = &batchv1alpha1.AsyncSQLSpec{
+		QueuesConfig: []batchv1alpha1.AsyncQueueConfig{{Name: "request-other"}},
+	}
+	g.Spec.Processor.AsyncConfig.ResultPollTimeout = testDuration30s
+	g.Spec.Processor.GlobalInferenceGateway = nil
+	g.Spec.Processor.ModelGateways = map[string]batchv1alpha1.InferenceGatewaySpec{
+		"model-a": {InferencePoolName: "pool-a"},
+	}
+
+	err := validateSpec(g)
+	if err == nil || !strings.Contains(err.Error(), `missing request queue "`+asyncRequestQueueName("pool-a")+`"`) {
+		t.Fatalf("validateSpec() error = %v, want missing default SQL request queue error", err)
 	}
 }
 
@@ -1042,7 +1136,7 @@ func newTestAsyncGateway(name string) *batchv1alpha1.LLMBatchGateway {
 	gw.Spec.Processor.AsyncConfig = &batchv1alpha1.AsyncProcessorSpec{
 		Concurrency:       &concurrency,
 		DrainTimeout:      "2m",
-		ResultPollTimeout: "30s",
+		ResultPollTimeout: testDuration30s,
 		InferenceGateway: &batchv1alpha1.InferenceGatewaySpec{
 			URL: testInferenceGatewayURL,
 		},
