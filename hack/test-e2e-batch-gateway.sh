@@ -76,68 +76,64 @@ get_async_transport_config() {
     '
 }
 
-# ── Detect dispatch mode from processor configmap ────────────────────────────
+# ── Verify the processor runs async dispatch ────────────────────────────────
 
 dispatch_mode=$(kubectl get configmap -n "${NAMESPACE}" \
     -l "app.kubernetes.io/instance=${CR_NAME},app.kubernetes.io/component=processor" \
-    -o jsonpath='{.items[0].data.config\.yaml}' | yq '.dispatch_mode // "sync"')
-log "Detected dispatch mode: $dispatch_mode"
+    -o jsonpath='{.items[0].data.config\.yaml}' | yq '.dispatch_mode')
+if [[ "$dispatch_mode" != "async" ]]; then
+    die "Processor configmap dispatch_mode is '$dispatch_mode', expected 'async'"
+fi
+log "Verified async dispatch mode"
 
 # ── Run tests ────────────────────────────────────────────────────────────────
 
 cd "${OPERATOR_DIR}/${BATCH_GATEWAY_DIR}/test/e2e"
 
-if [[ "$dispatch_mode" == "async" ]]; then
-    # The upstream TestE2E auto-skips in async mode. Run TestDispatcher instead
-    # to verify the async dispatch round-trip end-to-end.
-    TEST_RUN="${TEST_RUN:-TestDispatcher/BatchThroughDispatcher}"
+# The upstream TestE2E auto-skips in async mode. Run TestDispatcher instead
+# to verify the async dispatch round-trip end-to-end.
+TEST_RUN="${TEST_RUN:-TestDispatcher/BatchThroughDispatcher}"
 
-    step "Setting up port-forwards for async dispatcher tests..."
-    start_port_forward "svc/redis-master" 6399 6379
-    log "Port-forwards ready (redis:6399)"
+step "Setting up port-forwards for async dispatcher tests..."
+start_port_forward "svc/redis-master" 6399 6379
+log "Port-forwards ready (redis:6399)"
 
-    step "Recording async metrics before tests..."
-    before_success=$(get_async_metric "llm_d_async_async_successful_requests_total")
-    log "async_successful_requests_total before: $before_success"
+step "Recording async metrics before tests..."
+before_success=$(get_async_metric "llm_d_async_async_successful_requests_total")
+log "async_successful_requests_total before: $before_success"
 
-    step "Running async dispatcher e2e tests (${TEST_RUN})..."
-    # The operator deploys the CR under CR_NAME; pass that release name to the
-    # batch-gateway E2E module so it finds the processor ConfigMap and pods.
-    TEST_HELM_RELEASE="${CR_NAME}" go test -v -count=1 -run "${TEST_RUN}" ./...
+step "Running async dispatcher e2e tests (${TEST_RUN})..."
+# The operator deploys the CR under CR_NAME; pass that release name to the
+# batch-gateway E2E module so it finds the processor ConfigMap and pods.
+TEST_HELM_RELEASE="${CR_NAME}" go test -v -count=1 -run "${TEST_RUN}" ./...
 
-    step "Verifying requests went through llm-d-async..."
-    after_success=$(get_async_metric "llm_d_async_async_successful_requests_total")
-    diff=$((after_success - before_success))
+step "Verifying requests went through llm-d-async..."
+after_success=$(get_async_metric "llm_d_async_async_successful_requests_total")
+diff=$((after_success - before_success))
 
-    if [ "$diff" -gt 0 ]; then
-        log "Confirmed: $diff requests completed via llm-d-async ($before_success → $after_success)"
-    else
-        die "No requests went through llm-d-async (metric unchanged at $before_success)"
-    fi
-
-    pool_metric=$(get_async_metric "llm_d_async_async_pool_worker_limit")
-    if [ "$pool_metric" -gt 0 ]; then
-        log "Worker pool active: pool_worker_limit=$pool_metric"
-    else
-        die "Worker pool not active (async_pool_worker_limit=0)"
-    fi
-
-    # Verify gate budget if a gate type is configured
-    transport_config=$(get_async_transport_config)
-    gate_type=$(echo "$transport_config" | jq -r '.queues[0].gate_type // empty')
-    if [ -n "$gate_type" ]; then
-        budget_line=$(get_async_metrics | grep "^llm_d_async_async_dispatch_budget" | head -1)
-        if [ -n "$budget_line" ]; then
-            log "Gate budget: $budget_line"
-        else
-            die "Gate not active: async_dispatch_budget metric not found"
-        fi
-    fi
+if [ "$diff" -gt 0 ]; then
+    log "Confirmed: $diff requests completed via llm-d-async ($before_success → $after_success)"
 else
-    TEST_RUN="${TEST_RUN:-TestE2E/Batches/Lifecycle}"
+    die "No requests went through llm-d-async (metric unchanged at $before_success)"
+fi
 
-    step "Running batch-gateway e2e tests (${TEST_RUN})..."
-    go test -v -count=1 -run "${TEST_RUN}" ./...
+pool_metric=$(get_async_metric "llm_d_async_async_pool_worker_limit")
+if [ "$pool_metric" -gt 0 ]; then
+    log "Worker pool active: pool_worker_limit=$pool_metric"
+else
+    die "Worker pool not active (async_pool_worker_limit=0)"
+fi
+
+# Verify gate budget if a gate type is configured
+transport_config=$(get_async_transport_config)
+gate_type=$(echo "$transport_config" | jq -r '.queues[0].gate_type // empty')
+if [ -n "$gate_type" ]; then
+    budget_line=$(get_async_metrics | grep "^llm_d_async_async_dispatch_budget" | head -1)
+    if [ -n "$budget_line" ]; then
+        log "Gate budget: $budget_line"
+    else
+        die "Gate not active: async_dispatch_budget metric not found"
+    fi
 fi
 
 log "All batch-gateway e2e checks passed."

@@ -17,7 +17,7 @@ PROMETHEUS_OPERATOR_VERSION="${PROMETHEUS_OPERATOR_VERSION:-}"
 SEAWEEDFS_RELEASE="${SEAWEEDFS_RELEASE:-seaweedfs}"
 
 # Dev profile selects which config/samples/dev-<profile>.yaml CR to apply.
-# Available: async (default), sync, async-gate-redis, async-gate-prometheus-query,
+# Available: async (default), async-gate-redis, async-gate-prometheus-query,
 #            async-gate-prometheus-budget, async-gate-endpoint-scrape.
 DEV_PROFILE="${DEV_PROFILE:-async}"
 
@@ -164,12 +164,9 @@ detect_file_storage_type() {
 }
 
 install_prereqs() {
-    local install_redis=false
-    if [[ "${DEV_PROFILE}" == async* ]]; then
-        install_redis=true
-    fi
+    # Async dispatch is the only mode; Redis is always required.
     FILE_CLIENT_TYPE="$(detect_file_storage_type)" \
-        INSTALL_REDIS="${install_redis}" \
+        INSTALL_REDIS=true \
         NAMESPACE="${NAMESPACE}" \
         SEAWEEDFS_ACCESS_KEY="${SEAWEEDFS_ACCESS_KEY}" \
         SEAWEEDFS_SECRET_KEY="${SEAWEEDFS_SECRET_KEY}" \
@@ -285,7 +282,7 @@ EOF
 # See: https://github.com/llm-d-incubation/llm-d-async/blob/main/pkg/async/inference/flowcontrol/gate_factory.go
 prepare_gate_deps() {
     case "${DEV_PROFILE}" in
-        sync|sync-fs|async)
+        async)
             ;;
         async-gate-redis)
             prepare_gate_redis
@@ -490,22 +487,7 @@ apply_and_verify_cr() {
     local cr_name
     cr_name=$(yq '.metadata.name' "$cr_file")
 
-    # 1. Determine expected dispatch mode from profile name
-    local expected_dispatch="sync"
-    if [[ "${DEV_PROFILE}" == async* ]]; then
-        expected_dispatch="async"
-    fi
-
-    # 2. Verify CR's dispatchMode matches
-    local cr_dispatch_mode
-    cr_dispatch_mode=$(kubectl get llmbatchgateway "${cr_name}" -n "${NAMESPACE}" \
-        -o jsonpath='{.spec.processor.dispatchMode}')
-    if [[ "$cr_dispatch_mode" != "$expected_dispatch" ]]; then
-        die "CR dispatchMode is '$cr_dispatch_mode', expected '$expected_dispatch' (profile=${DEV_PROFILE})"
-    fi
-    log "CR dispatch mode verified: $cr_dispatch_mode"
-
-    # 3. Wait for workloads
+    # 1. Wait for workloads
     for dep in "${cr_name}-apiserver" "${cr_name}-gc"; do
         if ! wait_for_deployment "${dep}" "${NAMESPACE}"; then
             kubectl get pods -n "${NAMESPACE}" -l "app.kubernetes.io/instance=${cr_name}"
@@ -516,84 +498,80 @@ apply_and_verify_cr() {
         kubectl get pods -n "${NAMESPACE}" -l "app.kubernetes.io/instance=${cr_name}"
         return 1
     fi
-    if [[ "$expected_dispatch" == "async" ]]; then
-        if ! wait_for_deployment "${cr_name}-async-processor" "${NAMESPACE}"; then
-            kubectl get pods -n "${NAMESPACE}" -l "app.kubernetes.io/instance=${cr_name}"
-            return 1
-        fi
+    if ! wait_for_deployment "${cr_name}-async-processor" "${NAMESPACE}"; then
+        kubectl get pods -n "${NAMESPACE}" -l "app.kubernetes.io/instance=${cr_name}"
+        return 1
     fi
 
-    # 4. Wait for CR Ready
+    # 2. Wait for CR Ready
     if ! wait_for "CR ${cr_name} Ready" \
         "kubectl get llmbatchgateway ${cr_name} -n ${NAMESPACE} -o jsonpath='{.status.conditions[?(@.type==\"Ready\")].status}' | grep -q True"; then
         die "CR ${cr_name} not Ready"
     fi
 
-    # 5. Verify processor configmap dispatch_mode matches
+    # 3. Verify the processor configmap uses async dispatch
     local processor_cm_data
     processor_cm_data=$(kubectl get configmap -n "${NAMESPACE}" \
         -l "app.kubernetes.io/instance=${cr_name},app.kubernetes.io/component=processor" \
         -o jsonpath='{.items[0].data.config\.yaml}')
     local cm_dispatch
-    cm_dispatch=$(echo "$processor_cm_data" | yq '.dispatch_mode // "sync"')
-    if [[ "$cm_dispatch" != "$expected_dispatch" ]]; then
-        die "Processor configmap dispatch_mode is '$cm_dispatch', expected '$expected_dispatch'"
+    cm_dispatch=$(echo "$processor_cm_data" | yq '.dispatch_mode')
+    if [[ "$cm_dispatch" != "async" ]]; then
+        die "Processor configmap dispatch_mode is '$cm_dispatch', expected 'async'"
     fi
     log "Processor configmap dispatch mode verified: $cm_dispatch"
 
-    # 6. Verify async-processor configuration from deployment spec
-    if [[ "$expected_dispatch" == "async" ]]; then
-        local deploy_json
-        deploy_json=$(kubectl get deployment "${cr_name}-async-processor" -n "${NAMESPACE}" -o json)
-        local transport_json
-        transport_json=$(echo "$deploy_json" | jq -r '
-            .spec.template.spec.containers[0].args as $args |
-            ($args | index("--transport-config")) as $index |
-            if $index == null then "" else $args[$index + 1] end
-        ')
-        if [[ -z "$transport_json" ]]; then
-            die "Async processor transport config not found in Deployment args"
-        fi
+    # 4. Verify async-processor configuration from deployment spec
+    local deploy_json
+    deploy_json=$(kubectl get deployment "${cr_name}-async-processor" -n "${NAMESPACE}" -o json)
+    local transport_json
+    transport_json=$(echo "$deploy_json" | jq -r '
+        .spec.template.spec.containers[0].args as $args |
+        ($args | index("--transport-config")) as $index |
+        if $index == null then "" else $args[$index + 1] end
+    ')
+    if [[ -z "$transport_json" ]]; then
+        die "Async processor transport config not found in Deployment args"
+    fi
 
-        # Verify gate type if a gate profile is deployed
-        if [[ "${DEV_PROFILE}" == async-gate-* ]]; then
-            local expected_gate="${DEV_PROFILE##*gate-}"
-            local actual_gate
-            actual_gate=$(echo "$transport_json" | jq -r '.queues[0].gate_type // empty')
+    # Verify gate type if a gate profile is deployed
+    if [[ "${DEV_PROFILE}" == async-gate-* ]]; then
+        local expected_gate="${DEV_PROFILE##*gate-}"
+        local actual_gate
+        actual_gate=$(echo "$transport_json" | jq -r '.queues[0].gate_type // empty')
 
-            if [[ "$actual_gate" == "$expected_gate" ]]; then
-                log "Queue gate type verified: $actual_gate"
-            else
-                die "Expected queue gate type '$expected_gate', got '$actual_gate'"
-            fi
-        fi
-
-        # Verify worker pool from queuesConfig args matches CR
-        local expected_pool_id
-        expected_pool_id=$(yq '.spec.processor.asyncConfig.redis.queuesConfig[0].workerPoolID' "$cr_file")
-        local pool_id
-        pool_id=$(echo "$transport_json" | jq -r '.queues[0].worker_pool_id // empty')
-        if [[ -z "$expected_pool_id" || "$expected_pool_id" == "null" ]]; then
-            log "Worker pool ID not set in CR, using API default: $pool_id"
-        elif [[ "$pool_id" == "$expected_pool_id" ]]; then
-            log "Worker pool verified: $pool_id"
+        if [[ "$actual_gate" == "$expected_gate" ]]; then
+            log "Queue gate type verified: $actual_gate"
         else
-            die "Expected worker_pool_id '$expected_pool_id', got '$pool_id'"
+            die "Expected queue gate type '$expected_gate', got '$actual_gate'"
         fi
+    fi
 
-        # Verify pool gate from ConfigMap matches CR
-        local expected_pool_gate
-        expected_pool_gate=$(yq '.spec.processor.asyncConfig.workerPools[0].gateType' "$cr_file")
-        if [[ -n "$expected_pool_gate" && "$expected_pool_gate" != "null" ]]; then
-            local actual_pool_gate
-            actual_pool_gate=$(kubectl get configmap "${cr_name}-async-processor-config" -n "${NAMESPACE}" \
-                -o jsonpath='{.data.worker-pools\.json}' \
-                | jq -r '.[0].gate_type')
-            if [[ "$actual_pool_gate" == "$expected_pool_gate" ]]; then
-                log "Pool gate verified: $actual_pool_gate"
-            else
-                die "Expected pool gate '$expected_pool_gate', got '$actual_pool_gate'"
-            fi
+    # Verify worker pool from queuesConfig args matches CR
+    local expected_pool_id
+    expected_pool_id=$(yq '.spec.processor.asyncConfig.redis.queuesConfig[0].workerPoolID' "$cr_file")
+    local pool_id
+    pool_id=$(echo "$transport_json" | jq -r '.queues[0].worker_pool_id // empty')
+    if [[ -z "$expected_pool_id" || "$expected_pool_id" == "null" ]]; then
+        log "Worker pool ID not set in CR, using API default: $pool_id"
+    elif [[ "$pool_id" == "$expected_pool_id" ]]; then
+        log "Worker pool verified: $pool_id"
+    else
+        die "Expected worker_pool_id '$expected_pool_id', got '$pool_id'"
+    fi
+
+    # Verify pool gate from ConfigMap matches CR
+    local expected_pool_gate
+    expected_pool_gate=$(yq '.spec.processor.asyncConfig.workerPools[0].gateType' "$cr_file")
+    if [[ -n "$expected_pool_gate" && "$expected_pool_gate" != "null" ]]; then
+        local actual_pool_gate
+        actual_pool_gate=$(kubectl get configmap "${cr_name}-async-processor-config" -n "${NAMESPACE}" \
+            -o jsonpath='{.data.worker-pools\.json}' \
+            | jq -r '.[0].gate_type')
+        if [[ "$actual_pool_gate" == "$expected_pool_gate" ]]; then
+            log "Pool gate verified: $actual_pool_gate"
+        else
+            die "Expected pool gate '$expected_pool_gate', got '$actual_pool_gate'"
         fi
     fi
 

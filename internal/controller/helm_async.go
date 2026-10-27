@@ -273,10 +273,10 @@ func asyncQueueValues(queueConfigs []batchv1alpha1.AsyncQueueConfig, gatewayURL 
 	return queues
 }
 
-func sortedModelGateways(gw *batchv1alpha1.LLMBatchGateway) []batchv1alpha1.InferenceGatewaySpec {
+func sortedModelGateways(gw *batchv1alpha1.LLMBatchGateway) []batchv1alpha1.ModelGatewaySpec {
 	models := slices.Sorted(maps.Keys(gw.Spec.Processor.ModelGateways))
 
-	gateways := make([]batchv1alpha1.InferenceGatewaySpec, 0, len(models))
+	gateways := make([]batchv1alpha1.ModelGatewaySpec, 0, len(models))
 	for _, model := range models {
 		gateways = append(gateways, gw.Spec.Processor.ModelGateways[model])
 	}
@@ -289,7 +289,7 @@ func sortedModelGateways(gw *batchv1alpha1.LLMBatchGateway) []batchv1alpha1.Infe
 // <base>:<consumerID>, which the dispatcher honors per request, so each model
 // keeps its own result queue. The first model's queue (by sorted name) is used
 // only as the fallback.
-func sqlResultQueueNameFor(gateway batchv1alpha1.InferenceGatewaySpec) string {
+func sqlResultQueueNameFor(gateway batchv1alpha1.ModelGatewaySpec) string {
 	if gateway.ResultQueueName != "" {
 		return gateway.ResultQueueName
 	}
@@ -304,7 +304,7 @@ func sqlResultQueueName(gw *batchv1alpha1.LLMBatchGateway) string {
 	return sqlResultQueueNameFor(gateways[0])
 }
 
-func sqlRequestQueueName(gateway batchv1alpha1.InferenceGatewaySpec) string {
+func sqlRequestQueueName(gateway batchv1alpha1.ModelGatewaySpec) string {
 	if gateway.RequestQueueName != "" {
 		return gateway.RequestQueueName
 	}

@@ -2,7 +2,7 @@
 
 Deploy LLM Batch Gateway through the ODH platform on OpenShift.
 
-For upgrades, read the [Async Dispatch and Core Storage Migration](async-default-migration.md) guide first. It covers the separate PostgreSQL migration for Batch Gateway metadata and the transport choice for async queues.
+For upgrades, read the [Async Dispatch and Core Storage Migration](async-default-migration.md) guide first. It covers the removal of synchronous dispatch (an existing synchronous deployment must be drained and re-deployed as async), the separate PostgreSQL migration for Batch Gateway metadata, and the transport choice for async queues.
 
 ## Architecture
 
@@ -102,13 +102,15 @@ status:
 
 ### Step 2: Set up external dependencies
 
-LLMBatchGateway requires PostgreSQL and S3-compatible storage. Async dispatch uses either Redis/Valkey sorted-set or PostgreSQL SQL queues. For synchronous testing, use the provided script:
+LLMBatchGateway requires PostgreSQL and S3-compatible storage. Async dispatch
+uses either Redis/Valkey sorted-set or PostgreSQL SQL queues. Use the provided
+script:
 
 ```bash
 export NAMESPACE=batch-api
 export SEAWEEDFS_ACCESS_KEY="batch-gateway-$(openssl rand -hex 16)"
 export SEAWEEDFS_SECRET_KEY="$(openssl rand -hex 32)"
-bash hack/setup-prereqs.sh
+INSTALL_REDIS=true bash hack/setup-prereqs.sh
 ```
 
 Use unique values for `SEAWEEDFS_ACCESS_KEY` and `SEAWEEDFS_SECRET_KEY`. The
@@ -116,20 +118,17 @@ setup script requires both values and stores the secret key in
 `batch-gateway-secrets`. For production, use credentials from a managed Secret
 and do not use the local SeaweedFS setup script.
 
-For Redis-backed async testing, install Redis as well:
-
-```bash
-INSTALL_REDIS=true bash hack/setup-prereqs.sh
-```
 
 This creates the `$NAMESPACE` namespace and installs:
 - PostgreSQL (`postgresql.$NAMESPACE.svc.cluster.local:5432`)
 - SeaweedFS S3 (`seaweedfs.$NAMESPACE.svc.cluster.local:8333`, bucket: `batch-gateway`)
+- Redis (`redis-master.$NAMESPACE.svc.cluster.local:6379`; its URL is added to `batch-gateway-secrets`)
 - `batch-gateway-secrets` Secret
 
-The async setup also installs Redis at `redis-master.$NAMESPACE.svc.cluster.local:6379` and adds its URL to `batch-gateway-secrets`.
-
-For production, replace PostgreSQL and S3 with your own endpoints. Configure Redis only when using the Redis async transport. For SQL async transport, ensure the referenced Secret contains `postgresql-url` and configure `spec.processor.asyncConfig.sql`.
+For production, replace PostgreSQL and S3 with your own endpoints, plus Redis
+when you use the Redis async transport. For the SQL async transport, ensure the
+referenced Secret contains `postgresql-url` and configure
+`spec.processor.asyncConfig.sql`.
 
 ### Step 3: Create LLMBatchGateway CR
 
@@ -160,14 +159,24 @@ spec:
     config:
       inputFileDiskBudgetPercent: 10
       progressUpdateInterval: 15s
-    # Preserve synchronous dispatch for this existing-style configuration.
-    dispatchMode: sync
-    globalInferenceGateway:
-      url: http://inference-gateway.default.svc.cluster.local:8000
-      requestTimeout: 5m
-      maxRetries: 3
-      initialBackoff: 1s
-      maxBackoff: 60s
+    # Batch requests are always dispatched asynchronously. Each model maps to
+    # an inference pool; asyncConfig configures the async processor.
+    modelGateways:
+      llama-3:
+        inferencePoolName: llama-pool
+    asyncConfig:
+      concurrency: 8
+      drainTimeout: 2m
+      resultPollTimeout: 30s
+      inferenceGateway:
+        url: http://inference-gateway.default.svc.cluster.local:8000
+      redis:
+        requestPathURL: /v1/completions
+        pollIntervalMs: 1000
+        batchSize: 10
+        queuesConfig:
+        - name: "llm-d-async:requests:llama-pool"
+          workerPoolID: default
   gc:
     interval: 30m
 EOF
@@ -177,14 +186,15 @@ EOF
 
 ```bash
 $ oc get llmbatchgateway -n batch-api
-NAMESPACE   NAME            READY   API-READY   PROC-READY   GC-READY   AGE
-batch-api   batch-gateway   True    1           1            1          20s
+NAMESPACE   NAME            READY   API-READY   PROC-READY   GC-READY   ASYNC-READY   AGE
+batch-api   batch-gateway   True    1           1            1          1             20s
 
 $ oc get pods -n batch-api
-NAME                                       READY   STATUS    RESTARTS   AGE
-batch-gateway-apiserver-79b49fc6ff-d9fbh   1/1     Running   0          25s
-batch-gateway-gc-64987bc9c4-xqrtb          1/1     Running   0          25s
-batch-gateway-processor-7cc44bf4dd-m9jbk   1/1     Running   0          25s
+NAME                                          READY   STATUS    RESTARTS   AGE
+batch-gateway-apiserver-79b49fc6ff-d9fbh      1/1     Running   0          25s
+batch-gateway-gc-64987bc9c4-xqrtb             1/1     Running   0          25s
+batch-gateway-processor-7cc44bf4dd-m9jbk      1/1     Running   0          25s
+batch-gateway-async-processor-6b7d9c4f5-tl2xw  1/1     Running   0          25s
 
 $ oc get llmbatchgateway batch-gateway -n batch-api -o yaml
 apiVersion: batch.llm-d.ai/v1alpha1
@@ -206,13 +216,13 @@ spec:
   gc:
     interval: 30m
   processor:
-    dispatchMode: sync
-    globalInferenceGateway:
-      url: http://inference-gateway.default.svc.cluster.local:8000
-      requestTimeout: 5m
-      maxRetries: 3
-      initialBackoff: 1s
-      maxBackoff: 60s
+    asyncConfig:
+      concurrency: 8
+      drainTimeout: 2m
+      resultPollTimeout: 30s
+    modelGateways:
+      llama-3:
+        inferencePoolName: llama-pool
     replicas: 1
   secretRef:
     name: batch-gateway-secrets
@@ -227,20 +237,27 @@ status:
     processor:
       readyReplicas: 1
       replicas: 1
+    asyncProcessor:
+      readyReplicas: 1
+      replicas: 1
   conditions:
-  - message: API server has at least one ready replica
+  - message: API server: 1/1 replicas ready
     reason: Available
     status: "True"
     type: APIServerAvailable
-  - message: Processor has at least one ready replica
+  - message: Processor: 1/1 replicas ready
     reason: Available
     status: "True"
     type: ProcessorAvailable
-  - message: GC has at least one ready replica
+  - message: GC: 1/1 replicas ready
     reason: Available
     status: "True"
     type: GCAvailable
-  - message: All components have at least one ready replica
+  - message: Async processor: 1/1 replicas ready
+    reason: Available
+    status: "True"
+    type: AsyncProcessorAvailable
+  - message: All components are fully rolled out
     reason: AllComponentsReady
     status: "True"
     type: Ready

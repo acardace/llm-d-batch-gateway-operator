@@ -11,10 +11,10 @@ LLMBatchGateway CR
   Controller (Reconcile)
        |
        v
-  specToHelmValues()  ->  Helm values map
+  specToBatchHelmValues() / specToAsyncHelmValues()  ->  Helm values map
        |
        v
-  HelmRenderer.RenderChart()  ->  []unstructured.Unstructured
+  HelmRenderer.RenderBatchChart() / RenderAsyncChart()  ->  []unstructured.Unstructured
        |
        v
   Server-Side Apply  ->  K8s resources (Deployments, Services, etc.)
@@ -63,7 +63,9 @@ make fetch-batch-gateway
 ├── cmd/main.go                  # Operator entrypoint
 ├── internal/controller/
 │   ├── llmbatchgateway_controller.go  # Reconcile loop
-│   ├── helm.go                        # CRD spec → Helm values → K8s objects
+│   ├── helm.go                        # HelmRenderer: renders a chart to objects
+│   ├── helm_batch.go                  # CRD spec → batch-gateway Helm values
+│   ├── helm_async.go                  # CRD spec → llm-d-async Helm values
 │   └── *_test.go                      # Unit and integration tests
 ├── config/
 │   ├── crd/bases/               # Generated CRD YAML
@@ -90,7 +92,7 @@ make generate   # updates zz_generated.deepcopy.go
 make manifests  # updates config/crd/bases/batch.llm-d.ai_llmbatchgateways.yaml
 ```
 
-3. If the new field needs to be passed to the Helm chart, update `specToHelmValues()` in `internal/controller/helm.go`
+3. If the new field needs to be passed to a Helm chart, update `specToBatchHelmValues()` in `internal/controller/helm_batch.go` (batch-gateway components) or `specToAsyncHelmValues()` in `internal/controller/helm_async.go` (async processor)
 4. Update sample CRs in `config/samples/` to include the new field
 
 ### 4.2 Modifying the Controller
@@ -100,11 +102,11 @@ The reconcile loop lives in `internal/controller/llmbatchgateway_controller.go`.
 1. Fetch the `LLMBatchGateway` CR
 2. Call `HelmRenderer.RenderChart()` to produce unstructured K8s objects
 3. Set owner references and apply each object via Server-Side Apply
-4. Update status conditions (`Ready`, `APIServerAvailable`, `ProcessorAvailable`)
+4. Update status conditions (`Ready`, `APIServerAvailable`, `ProcessorAvailable`, `GCAvailable`, `AsyncProcessorAvailable`)
 
 ### 4.3 Modifying the Helm Values Mapping
 
-The mapping from CRD spec to Helm values is in `internal/controller/helm.go`, function `specToHelmValues()`. When the upstream chart adds new values or the CRD adds new fields, update this function accordingly.
+The mapping from CRD spec to Helm values lives in `internal/controller/helm_batch.go` (`specToBatchHelmValues`, for the batch-gateway chart) and `internal/controller/helm_async.go` (`specToAsyncHelmValues`, for the llm-d-async chart). When the upstream chart adds new values or the CRD adds new fields, update the matching function accordingly.
 
 ### 4.4 Updating the Helm Chart
 
@@ -155,7 +157,7 @@ make test
 
 This runs all tests using [envtest](https://book.kubebuilder.io/reference/envtest) (a local control plane without a real cluster). Tests cover:
 
-- `specToHelmValues()` mapping correctness
+- `specToBatchHelmValues()` / `specToAsyncHelmValues()` mapping correctness
 - Helm chart rendering (requires the batch-gateway chart; `make test` fetches it automatically)
 - Controller reconciliation: resource creation, owner references, status conditions, spec updates
 
@@ -167,7 +169,7 @@ One command sets up a full local environment:
 make dev-deploy
 ```
 
-This creates a Kind cluster and deploys PostgreSQL, SeaweedFS, and Redis for async profiles, plus a vLLM simulator, the operator, and a dev `LLMBatchGateway` CR. Configurable via environment variables:
+This creates a Kind cluster and deploys PostgreSQL, SeaweedFS, and Redis, plus a vLLM simulator, the operator, and a dev `LLMBatchGateway` CR. Configurable via environment variables:
 
 | Variable | Default | Description |
 |----------|---------|-------------|

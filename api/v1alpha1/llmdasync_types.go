@@ -6,10 +6,11 @@ import (
 
 // --- Async Processor ---
 
-// AsyncProcessorSpec configures the optional async-processor component that dispatches
-// batch inference requests via a transport-backed queue to inference gateways.
-// When set on LLMBatchGatewaySpec, the controller deploys an additional
-// async-processor Deployment alongside the core components.
+// AsyncProcessorSpec configures the async-processor component that dispatches
+// batch inference requests via a transport-backed queue (Redis or SQL) to
+// inference gateways. It is a required part of LLMBatchGatewaySpec; the
+// controller always deploys the async-processor Deployment alongside the
+// core components.
 // +kubebuilder:validation:XValidation:rule="!(has(self.redis) && has(self.sql))",message="asyncConfig.redis and asyncConfig.sql are mutually exclusive"
 type AsyncProcessorSpec struct {
 	// Replicas is reserved for the future desired number of async-processor pods.
@@ -176,19 +177,34 @@ type AsyncQueueConfig struct {
 	GateParams map[string]string `json:"gateParams,omitempty"`
 }
 
+// AsyncTLSSpec configures TLS for the async processor's connections to the
+// inference gateway. It applies to every queue of the dispatcher, which is a
+// single process-wide client configuration.
+// +kubebuilder:validation:XValidation:rule="!(has(self.caCertKey) || has(self.certKey) || has(self.keyKey)) || has(self.secretName)",message="tls.secretName is required when tls.caCertKey, tls.certKey or tls.keyKey are set"
+// +kubebuilder:validation:XValidation:rule="has(self.certKey) == has(self.keyKey)",message="tls.certKey and tls.keyKey must both be set or both be empty"
 type AsyncTLSSpec struct {
+	// SecretName is the name of the Secret, in the LLMBatchGateway's namespace,
+	// that holds the CA certificate and optional client certificate/key. Its
+	// keys are selected with caCertKey, certKey and keyKey below.
 	// +kubebuilder:validation:MaxLength=253
 	SecretName string `json:"secretName,omitempty"`
 
+	// InsecureSkipVerify disables verification of the inference gateway's TLS
+	// certificate. Not recommended for production; prefer caCertKey.
 	InsecureSkipVerify bool `json:"insecureSkipVerify,omitempty"`
 
+	// CACertKey is the key in SecretName holding a custom CA certificate used to
+	// verify the inference gateway.
 	// +kubebuilder:validation:MaxLength=253
 	CACertKey string `json:"caCertKey,omitempty"`
 
+	// CertKey is the key in SecretName holding the client certificate for mutual
+	// TLS. Requires keyKey.
 	// +kubebuilder:validation:MaxLength=253
 	CertKey string `json:"certKey,omitempty"`
 
-	// KeyKey is the key in the Secret holding the private key.
+	// KeyKey is the key in SecretName holding the client private key for mutual
+	// TLS. Requires certKey.
 	// +kubebuilder:validation:MaxLength=253
 	KeyKey string `json:"keyKey,omitempty"`
 }

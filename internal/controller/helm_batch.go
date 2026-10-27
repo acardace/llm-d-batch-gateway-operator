@@ -212,18 +212,12 @@ func specToBatchHelmValues(gw *batchv1alpha1.LLMBatchGateway, secretName string,
 		processor["resources"] = resourceRequirementsToMap(gw.Spec.Processor.Resources)
 	}
 
-	procConfig := map[string]any{}
-	setIfNotEmpty(procConfig, "dispatchMode", gw.Spec.Processor.DispatchMode)
-	if gw.Spec.Processor.GlobalInferenceGateway != nil {
-		procConfig["globalInferenceGateway"] = inferenceGatewayToMap(gw.Spec.Processor.GlobalInferenceGateway)
+	procConfig := map[string]any{
+		// The async processor is always deployed, so the batch-gateway chart
+		// must always be told to dispatch asynchronously.
+		"dispatchMode": dispatchModeAsync,
 	}
-	if gw.Spec.Processor.DispatchMode != dispatchModeAsync && len(gw.Spec.Processor.ModelGateways) > 0 {
-		mg := map[string]any{}
-		for model, spec := range gw.Spec.Processor.ModelGateways {
-			mg[model] = inferenceGatewayToMap(&spec)
-		}
-		procConfig["modelGateways"] = mg
-	} else if gw.Spec.Processor.DispatchMode == dispatchModeAsync && gw.Spec.Processor.AsyncConfig != nil {
+	if gw.Spec.Processor.AsyncConfig != nil {
 		asyncDispatch := map[string]any{
 			"resultPollTimeout": gw.Spec.Processor.AsyncConfig.ResultPollTimeout,
 		}
@@ -355,44 +349,7 @@ func specToBatchHelmValues(gw *batchv1alpha1.LLMBatchGateway, secretName string,
 	return vals
 }
 
-func inferenceGatewayToMap(gw *batchv1alpha1.InferenceGatewaySpec) map[string]interface{} {
-	m := map[string]interface{}{}
-	setIfNotEmpty(m, "url", gw.URL)
-	setIfNotEmpty(m, "inferencePoolName", gw.InferencePoolName)
-
-	// The batch-gateway processor validates that requestTimeout, maxRetries,
-	// initialBackoff, and maxBackoff are all present (non-nil) in the rendered
-	// config. Always emit these keys with sensible defaults so the chart
-	// template never renders <nil> or empty strings for them.
-	if gw.RequestTimeout != "" {
-		m["requestTimeout"] = gw.RequestTimeout
-	} else {
-		m["requestTimeout"] = "5m"
-	}
-	if gw.MaxRetries != nil {
-		m["maxRetries"] = int64(*gw.MaxRetries)
-	} else {
-		m["maxRetries"] = int64(3)
-	}
-	if gw.InitialBackoff != "" {
-		m["initialBackoff"] = gw.InitialBackoff
-	} else {
-		m["initialBackoff"] = "1s"
-	}
-	if gw.MaxBackoff != "" {
-		m["maxBackoff"] = gw.MaxBackoff
-	} else {
-		m["maxBackoff"] = "60s"
-	}
-
-	setIfNotEmpty(m, "tlsCaCertFile", gw.TLSCACertFile)
-	setIfNotEmpty(m, "inferenceObjective", gw.InferenceObjective)
-	setIfNotEmpty(m, "tlsClientCertFile", gw.TLSClientCertFile)
-	setIfNotEmpty(m, "tlsClientKeyFile", gw.TLSClientKeyFile)
-	return m
-}
-
-func asyncModelGatewayToMap(gw *batchv1alpha1.InferenceGatewaySpec) map[string]interface{} {
+func asyncModelGatewayToMap(gw *batchv1alpha1.ModelGatewaySpec) map[string]interface{} {
 	m := map[string]interface{}{}
 	setIfNotEmpty(m, "inferencePoolName", gw.InferencePoolName)
 	setIfNotEmpty(m, "inferenceObjective", gw.InferenceObjective)
@@ -506,28 +463,6 @@ func mergeProcessorConfig(m map[string]interface{}, cfg *batchv1alpha1.Processor
 			m["resumable"] = resumable
 		}
 	}
-	legacyObjective := cfg.InferenceObjective //nolint:staticcheck // deprecated field is honored on purpose
-	if legacyObjective != "" {
-		if gw, ok := m["globalInferenceGateway"].(map[string]any); ok {
-			setDefaultObjective(gw, legacyObjective)
-		}
-		if mgs, ok := m["modelGateways"].(map[string]any); ok {
-			for _, v := range mgs {
-				if mg, ok := v.(map[string]any); ok {
-					setDefaultObjective(mg, legacyObjective)
-				}
-			}
-		}
-		if ad, ok := m["asyncDispatch"].(map[string]any); ok {
-			if models, ok := ad["models"].(map[string]any); ok {
-				for _, v := range models {
-					if model, ok := v.(map[string]any); ok {
-						setDefaultObjective(model, legacyObjective)
-					}
-				}
-			}
-		}
-	}
 	if cfg.DefaultOutputExpirationSeconds != 0 {
 		m["defaultOutputExpirationSeconds"] = cfg.DefaultOutputExpirationSeconds
 	}
@@ -540,12 +475,6 @@ func mergeProcessorConfig(m map[string]interface{}, cfg *batchv1alpha1.Processor
 	setIfNotEmpty(m, "routeKeyMethod", cfg.RouteKeyMethod)
 	if cfg.EnablePprof {
 		m["enablePprof"] = true
-	}
-}
-
-func setDefaultObjective(gw map[string]any, objective string) {
-	if _, exists := gw["inferenceObjective"]; !exists {
-		gw["inferenceObjective"] = objective
 	}
 }
 

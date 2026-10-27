@@ -107,13 +107,10 @@ func testCRDeletionCleanup(t *testing.T) {
 	cr := kubectlGetJSON(t, llmBatchGatewayKind, tempCRName, testNamespace)
 	ownerUID := getObjectUID(t, cr)
 
-	// async mode adds the async-processor Deployment; processor is a StatefulSet.
-	minDeployments := 2
-	minConfigmaps := 3
-	if isAsyncMode(t, testCRName, testNamespace) {
-		minDeployments = 3
-		minConfigmaps = 4
-	}
+	// 2 batch Deployments (apiserver, gc) + 1 async-processor Deployment;
+	// the processor is a StatefulSet.
+	minDeployments := 3
+	minConfigmaps := 4
 	for _, tc := range []struct {
 		resource string
 		minCount int

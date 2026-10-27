@@ -59,16 +59,12 @@ type LLMBatchGatewaySpec struct {
 	SecretRef corev1.SecretReference `json:"secretRef"`
 
 	// DBBackend selects the database backend used for job state storage.
-	// The batch-gateway control plane uses PostgreSQL. Redis is used by the
-	// async processor when dispatchMode is "async"; async is the default.
+	// The batch-gateway control plane uses PostgreSQL. The async processor's
+	// request/result queues use a separate transport, configured under
+	// processor.asyncConfig.redis or processor.asyncConfig.sql.
 	// +kubebuilder:validation:Enum=postgresql
 	// +kubebuilder:default=postgresql
 	DBBackend string `json:"dbBackend,omitempty"`
-
-	// RedisClient is retained for API compatibility but is no longer used by
-	// the batch-gateway control plane. Configure Redis under processor.asyncConfig.
-	// Deprecated: do not set this field.
-	Redis *RedisClientSpec `json:"redis,omitempty"`
 
 	// ExtraEndpoints adds deployment-specific inference paths to the standard
 	// OpenAI Batch API allowlist for both the API server and processor.
@@ -116,17 +112,6 @@ type LLMBatchGatewaySpec struct {
 	// from private registries. Applied globally to all component pods (apiServer, processor, gc).
 	// +kubebuilder:validation:MaxItems=20
 	ImagePullSecrets []corev1.LocalObjectReference `json:"imagePullSecrets,omitempty"`
-}
-
-// --- Redis Client ---
-
-// RedisClientSpec configures Redis/Valkey client connection settings.
-type RedisClientSpec struct {
-	// EnableTLS enables TLS for the Redis/Valkey connection.
-	EnableTLS bool `json:"enableTLS,omitempty"`
-
-	// Insecure skips TLS certificate verification. Only effective when enableTLS is true.
-	Insecure bool `json:"insecure,omitempty"`
 }
 
 // --- File Storage ---
@@ -216,6 +201,7 @@ type FileRetrySpec struct {
 type APIServerSpec struct {
 	// Replicas is the desired number of API server pods.
 	// Setting this to 0 suspends the API server; the Ready condition will be False.
+	// Every replica must be ready before the component is reported Available.
 	// +kubebuilder:default=1
 	// +kubebuilder:validation:Minimum=0
 	Replicas *int32 `json:"replicas,omitempty"`
@@ -308,11 +294,13 @@ type LoggingConfig struct {
 // --- Processor ---
 
 // ProcessorSpec configures the request-processing worker component.
-// +kubebuilder:validation:XValidation:rule="self.dispatchMode != 'async' || has(self.asyncConfig)",message=".spec.processor.asyncConfig is required when dispatchMode is 'async'"
-// +kubebuilder:validation:XValidation:rule="self.dispatchMode != 'async' || (has(self.asyncConfig) && (has(self.asyncConfig.redis) || has(self.asyncConfig.sql)))",message="asyncConfig.redis or asyncConfig.sql is required when dispatchMode is 'async'"
+// Batch requests are always dispatched asynchronously through the async
+// processor; there is no synchronous dispatch mode.
+// +kubebuilder:validation:XValidation:rule="has(self.asyncConfig) && (has(self.asyncConfig.redis) || has(self.asyncConfig.sql))",message="asyncConfig.redis or asyncConfig.sql is required"
 type ProcessorSpec struct {
 	// Replicas is the desired number of processor pods.
 	// Setting this to 0 suspends the processor; the Ready condition will be False.
+	// Every replica must be ready before the component is reported Available.
 	// +kubebuilder:default=1
 	// +kubebuilder:validation:Minimum=0
 	Replicas *int32 `json:"replicas,omitempty"`
@@ -328,86 +316,47 @@ type ProcessorSpec struct {
 	// Config holds fine-grained processor configuration.
 	Config *ProcessorConfigSpec `json:"config,omitempty"`
 
-	// DispatchMode controls how batch requests are dispatched to inference backends.
-	// - "async" (default) deploys an async-processor that dispatches via a message queue.
-	// - "sync" sends requests directly via HTTP. Set this explicitly to preserve synchronous dispatch.
-	// +kubebuilder:validation:Enum=sync;async
-	// +kubebuilder:default=async
-	DispatchMode string `json:"dispatchMode,omitempty"`
+	// ModelGateways maps model names to their async dispatch pool.
+	// Each entry must include an inferencePoolName.
+	ModelGateways map[string]ModelGatewaySpec `json:"modelGateways,omitempty"`
 
-	// GlobalInferenceGateway is the default inference gateway used for all models
-	// unless overridden by a ModelGateways entry.
-	// Not supported when dispatchMode is "async"; use modelGateways with inferencePoolName instead.
-	GlobalInferenceGateway *InferenceGatewaySpec `json:"globalInferenceGateway,omitempty"`
-
-	// ModelGateways maps model names to per-model inference gateway configurations.
-	// In sync mode, overrides GlobalInferenceGateway for the listed models.
-	// In async mode, this is required and each entry must include an inferencePoolName.
-	ModelGateways map[string]InferenceGatewaySpec `json:"modelGateways,omitempty"`
-
-	// AsyncConfig configures the async-processor deployment.
-	// Required when dispatchMode is "async".
-	// +optional
-	AsyncConfig *AsyncProcessorSpec `json:"asyncConfig,omitempty"`
+	// AsyncConfig configures the async-processor deployment that dispatches
+	// batch inference requests to inference gateways through an async queue
+	// transport (Redis or PostgreSQL SQL).
+	// +kubebuilder:validation:Required
+	AsyncConfig *AsyncProcessorSpec `json:"asyncConfig"`
 }
 
-// InferenceGatewaySpec configures a connection to an inference gateway.
-// +kubebuilder:validation:XValidation:rule="!has(self.tlsInsecureSkipVerify) || !self.tlsInsecureSkipVerify",message="tlsInsecureSkipVerify is not allowed; configure trusted CA certificates instead"
+// InferenceGatewaySpec configures the inference gateway that the async
+// processor dispatches requests to.
 type InferenceGatewaySpec struct {
 	// URL is the base URL of the inference gateway (e.g. "http://gateway.svc:8000").
-	// Required when dispatchMode is set to 'sync'.
 	// +kubebuilder:validation:MaxLength=2048
 	// +kubebuilder:validation:Pattern=`^https?://.+$`
 	URL string `json:"url,omitempty"`
+}
 
+// ModelGatewaySpec maps a model to the async dispatch pool that serves it.
+type ModelGatewaySpec struct {
 	// InferencePoolName identifies the async dispatch pool for this model.
-	// Required when dispatchMode is set to 'async'.
 	// +kubebuilder:validation:MaxLength=253
 	InferencePoolName string `json:"inferencePoolName,omitempty"`
 
-	// RequestTimeout is the maximum time to wait for a single inference response (e.g. "5m").
-	// +kubebuilder:validation:Pattern=`^([0-9]+(\.[0-9]+)?(ms|s|m|h))+$`
-	// +kubebuilder:validation:MaxLength=32
-	RequestTimeout string `json:"requestTimeout,omitempty"`
-
-	// MaxRetries is the maximum number of retry attempts on transient errors.
-	MaxRetries *int32 `json:"maxRetries,omitempty"`
-
-	// InitialBackoff is the wait duration before the first retry (e.g. "500ms").
-	// +kubebuilder:validation:Pattern=`^([0-9]+(\.[0-9]+)?(ms|s|m|h))+$`
-	// +kubebuilder:validation:MaxLength=32
-	InitialBackoff string `json:"initialBackoff,omitempty"`
-
-	// MaxBackoff is the maximum wait duration between retries (e.g. "30s").
-	// +kubebuilder:validation:Pattern=`^([0-9]+(\.[0-9]+)?(ms|s|m|h))+$`
-	// +kubebuilder:validation:MaxLength=32
-	MaxBackoff string `json:"maxBackoff,omitempty"`
-
-	// InferenceObjective specifies the scheduling objective for this gateway (e.g. "throughput", "latency").
+	// InferenceObjective specifies the scheduling objective for this model
+	// (e.g. "throughput", "latency").
 	// +kubebuilder:validation:MaxLength=253
 	InferenceObjective string `json:"inferenceObjective,omitempty"`
 
-	// TLSInsecureSkipVerify disables TLS certificate verification. Not recommended for production.
-	TLSInsecureSkipVerify bool `json:"tlsInsecureSkipVerify,omitempty"`
-
-	// TLSCACertFile is the path to a custom CA certificate file for verifying the gateway's TLS certificate.
-	// +kubebuilder:validation:MaxLength=4096
-	TLSCACertFile string `json:"tlsCACertFile,omitempty"`
-
-	// TLSClientCertFile is the path to the client TLS certificate file for mutual TLS.
-	// +kubebuilder:validation:MaxLength=4096
-	TLSClientCertFile string `json:"tlsClientCertFile,omitempty"`
-
-	// TLSClientKeyFile is the path to the client TLS private key file for mutual TLS.
-	// +kubebuilder:validation:MaxLength=4096
-	TLSClientKeyFile string `json:"tlsClientKeyFile,omitempty"`
-
-	// RequestQueueName is the Redis request queue used in async dispatch mode.
+	// RequestQueueName is the async request queue used by the async processor.
+	// It is a Redis sorted-set key or a SQL queue name, depending on
+	// asyncConfig.redis or asyncConfig.sql.
 	// Set together with resultQueueName to override the queue derived from inferencePoolName.
 	// +kubebuilder:validation:MaxLength=253
 	RequestQueueName string `json:"requestQueueName,omitempty"`
 
-	// ResultQueueName is the Redis result queue base used in async dispatch mode.
+	// ResultQueueName is the async result queue base used by the async processor.
+	// The processor appends its replica identity to this base. It is a Redis list
+	// key or a SQL queue name, depending on asyncConfig.redis or asyncConfig.sql.
 	// Set together with requestQueueName.
 	// +kubebuilder:validation:MaxLength=253
 	ResultQueueName string `json:"resultQueueName,omitempty"`
@@ -501,13 +450,6 @@ type ProcessorConfigSpec struct {
 	// Resumable holds tunables for the resumable batch pipeline.
 	Resumable *ResumableConfigSpec `json:"resumable,omitempty"`
 
-	// InferenceObjective is applied to globalInferenceGateway and to every
-	// modelGateways entry that does not set its own inferenceObjective.
-	//
-	// Deprecated: set inferenceObjective on the gateway instead.
-	// +kubebuilder:validation:MaxLength=253
-	InferenceObjective string `json:"inferenceObjective,omitempty"`
-
 	// DefaultOutputExpirationSeconds is the TTL for job output files.
 	DefaultOutputExpirationSeconds int64 `json:"defaultOutputExpirationSeconds,omitempty"`
 
@@ -544,6 +486,7 @@ type ProcessorConfigSpec struct {
 type GCSpec struct {
 	// Replicas is the desired number of GC pods.
 	// Setting this to 0 suspends the GC; the Ready condition will be False.
+	// Every replica must be ready before the component is reported Available.
 	// +kubebuilder:default=1
 	// +kubebuilder:validation:Minimum=0
 	Replicas *int32 `json:"replicas,omitempty"`
@@ -739,8 +682,6 @@ type ComponentStatus struct {
 	GC *ComponentReplicaStatus `json:"gc,omitempty"`
 
 	// AsyncProcessor reports the replica status of the async-processor Deployment.
-	// Absent when spec.processor.dispatchMode is "sync" (do no Deployment).
-	// Present with actual replica counts when dispatchMode is "async".
 	AsyncProcessor *ComponentReplicaStatus `json:"asyncProcessor,omitempty"`
 }
 

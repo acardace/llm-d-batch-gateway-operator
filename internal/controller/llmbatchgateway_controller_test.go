@@ -1,8 +1,12 @@
 package controller
 
 import (
+	"bytes"
 	"context"
 	"errors"
+	"io"
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 	"time"
@@ -10,11 +14,15 @@ import (
 	appsv1 "k8s.io/api/apps/v1"
 	corev1 "k8s.io/api/core/v1"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
+	"k8s.io/apimachinery/pkg/api/meta"
 	"k8s.io/apimachinery/pkg/api/resource"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
 	"k8s.io/apimachinery/pkg/types"
+	utilyaml "k8s.io/apimachinery/pkg/util/yaml"
 	"k8s.io/client-go/tools/record"
 	"k8s.io/utils/ptr"
+	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/reconcile"
 
 	batchv1alpha1 "github.com/opendatahub-io/llm-d-batch-gateway-operator/api/v1alpha1"
@@ -29,6 +37,7 @@ const (
 )
 
 func newTestGateway(name string) *batchv1alpha1.LLMBatchGateway {
+	concurrency := int32(8)
 	return &batchv1alpha1.LLMBatchGateway{
 		ObjectMeta: metav1.ObjectMeta{
 			Name:      name,
@@ -48,11 +57,18 @@ func newTestGateway(name string) *batchv1alpha1.LLMBatchGateway {
 				Replicas: ptr.To(int32(1)),
 			},
 			Processor: batchv1alpha1.ProcessorSpec{
-				Replicas:     ptr.To(int32(1)),
-				DispatchMode: "sync",
-				GlobalInferenceGateway: &batchv1alpha1.InferenceGatewaySpec{
-					URL:            "http://inference-gw:8000",
-					RequestTimeout: "5m",
+				Replicas: ptr.To(int32(1)),
+				ModelGateways: map[string]batchv1alpha1.ModelGatewaySpec{
+					"sim-model": {InferencePoolName: "sim-pool"},
+				},
+				AsyncConfig: &batchv1alpha1.AsyncProcessorSpec{
+					Concurrency:       &concurrency,
+					DrainTimeout:      "2m",
+					ResultPollTimeout: "30s",
+					InferenceGateway: &batchv1alpha1.InferenceGatewaySpec{
+						URL: testInferenceGatewayURL,
+					},
+					Redis: &batchv1alpha1.AsyncRedisSpec{},
 				},
 			},
 			GC: batchv1alpha1.GCSpec{
@@ -62,32 +78,64 @@ func newTestGateway(name string) *batchv1alpha1.LLMBatchGateway {
 	}
 }
 
-func TestValidateSpecRejectsQueueNamesOutsideAsyncMode(t *testing.T) {
-	t.Run("globalInferenceGateway", func(t *testing.T) {
-		gw := newTestGateway("test-sync-global-queues")
-		gw.Spec.Processor.GlobalInferenceGateway.RequestQueueName = "requests"
-		gw.Spec.Processor.GlobalInferenceGateway.ResultQueueName = "results"
-
-		err := validateSpec(gw)
-		if err == nil || !strings.Contains(err.Error(), "processor.globalInferenceGateway.requestQueueName") {
-			t.Fatalf("validateSpec() error = %v, want globalInferenceGateway queue name error", err)
+func TestValidateSpec(t *testing.T) {
+	t.Run("valid async gateway", func(t *testing.T) {
+		gw := newTestGateway("test-valid-async")
+		if err := validateSpec(gw); err != nil {
+			t.Fatalf("validateSpec() error = %v, want nil", err)
 		}
 	})
 
-	t.Run("modelGateways", func(t *testing.T) {
-		gw := newTestGateway("test-sync-model-queues")
-		gw.Spec.Processor.GlobalInferenceGateway = nil
-		gw.Spec.Processor.ModelGateways = map[string]batchv1alpha1.InferenceGatewaySpec{
-			"model-a": {
-				URL:              "http://model-a:8000",
-				RequestQueueName: "requests",
-				ResultQueueName:  "results",
-			},
+	t.Run("rejects missing asyncConfig", func(t *testing.T) {
+		gw := newTestGateway("test-no-asyncconfig")
+		gw.Spec.Processor.AsyncConfig = nil
+
+		err := validateSpec(gw)
+		if err == nil || !strings.Contains(err.Error(), "processor.asyncConfig is required") {
+			t.Fatalf("validateSpec() error = %v, want asyncConfig required error", err)
+		}
+	})
+
+	t.Run("rejects missing resultPollTimeout", func(t *testing.T) {
+		gw := newTestGateway("test-no-poll-timeout")
+		gw.Spec.Processor.AsyncConfig.ResultPollTimeout = ""
+
+		err := validateSpec(gw)
+		if err == nil || !strings.Contains(err.Error(), "resultPollTimeout is required") {
+			t.Fatalf("validateSpec() error = %v, want resultPollTimeout required error", err)
+		}
+	})
+
+	t.Run("rejects missing modelGateways", func(t *testing.T) {
+		gw := newTestGateway("test-no-modelgateways")
+		gw.Spec.Processor.ModelGateways = nil
+
+		err := validateSpec(gw)
+		if err == nil || !strings.Contains(err.Error(), "processor.modelGateways is required") {
+			t.Fatalf("validateSpec() error = %v, want modelGateways required error", err)
+		}
+	})
+
+	t.Run("rejects modelGateway without inferencePoolName", func(t *testing.T) {
+		gw := newTestGateway("test-no-pool-name")
+		gw.Spec.Processor.ModelGateways["sim-model"] = batchv1alpha1.ModelGatewaySpec{}
+
+		err := validateSpec(gw)
+		if err == nil || !strings.Contains(err.Error(), "processor.modelGateways[sim-model].inferencePoolName is required") {
+			t.Fatalf("validateSpec() error = %v, want inferencePoolName required error", err)
+		}
+	})
+
+	t.Run("rejects mismatched queue names", func(t *testing.T) {
+		gw := newTestGateway("test-queue-pairing")
+		gw.Spec.Processor.ModelGateways["sim-model"] = batchv1alpha1.ModelGatewaySpec{
+			InferencePoolName: "sim-pool",
+			RequestQueueName:  "requests",
 		}
 
 		err := validateSpec(gw)
-		if err == nil || !strings.Contains(err.Error(), "processor.modelGateways[model-a].requestQueueName") {
-			t.Fatalf("validateSpec() error = %v, want modelGateways queue name error", err)
+		if err == nil || !strings.Contains(err.Error(), "requestQueueName and resultQueueName must both be set or both be empty") {
+			t.Fatalf("validateSpec() error = %v, want queue name pairing error", err)
 		}
 	})
 }
@@ -109,36 +157,100 @@ func TestValidateSpecRequiresAsyncTransport(t *testing.T) {
 	}
 }
 
+// TestAsyncTLSAdmission pins the asyncConfig.tls invariants that the Helm chart
+// would otherwise enforce silently: cert keys need a Secret to mount, and a
+// client certificate/key pair must be complete.
+func TestAsyncTLSAdmission(t *testing.T) {
+	ctx := context.Background()
+	tests := []struct {
+		name        string
+		tls         *batchv1alpha1.AsyncTLSSpec
+		wantInvalid bool
+		wantMessage string
+	}{
+		{
+			name: "secret with CA",
+			tls:  &batchv1alpha1.AsyncTLSSpec{SecretName: "igw-tls", CACertKey: "ca.crt"},
+		},
+		{
+			name: "secret with mTLS pair",
+			tls:  &batchv1alpha1.AsyncTLSSpec{SecretName: "igw-tls", CertKey: "tls.crt", KeyKey: "tls.key"},
+		},
+		{
+			name: "insecure skip verify alone",
+			tls:  &batchv1alpha1.AsyncTLSSpec{InsecureSkipVerify: true},
+		},
+		{
+			name:        "CA key without secret",
+			tls:         &batchv1alpha1.AsyncTLSSpec{CACertKey: "ca.crt"},
+			wantInvalid: true,
+			wantMessage: "tls.secretName is required",
+		},
+		{
+			name:        "client cert without secret",
+			tls:         &batchv1alpha1.AsyncTLSSpec{CertKey: "tls.crt", KeyKey: "tls.key"},
+			wantInvalid: true,
+			wantMessage: "tls.secretName is required",
+		},
+		{
+			name:        "client cert without key",
+			tls:         &batchv1alpha1.AsyncTLSSpec{SecretName: "igw-tls", CertKey: "tls.crt"},
+			wantInvalid: true,
+			wantMessage: "tls.certKey and tls.keyKey must both be set or both be empty",
+		},
+		{
+			name:        "client key without cert",
+			tls:         &batchv1alpha1.AsyncTLSSpec{SecretName: "igw-tls", KeyKey: "tls.key"},
+			wantInvalid: true,
+			wantMessage: "tls.certKey and tls.keyKey must both be set or both be empty",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			gw := newTestAsyncGateway("test-tls-" + strings.ReplaceAll(strings.ToLower(tt.name), " ", "-"))
+			gw.Spec.Processor.AsyncConfig.Redis = &batchv1alpha1.AsyncRedisSpec{}
+			gw.Spec.Processor.AsyncConfig.TLS = tt.tls
+
+			err := k8sClient.Create(ctx, gw)
+			if !tt.wantInvalid {
+				if err != nil {
+					t.Fatalf("Create() error = %v, want nil", err)
+				}
+				t.Cleanup(func() { _ = k8sClient.Delete(ctx, gw) })
+				return
+			}
+			if !apierrors.IsInvalid(err) {
+				t.Fatalf("Create() error = %v, want Invalid", err)
+			}
+			if !strings.Contains(err.Error(), tt.wantMessage) {
+				t.Errorf("Create() error = %v, want message %q", err, tt.wantMessage)
+			}
+		})
+	}
+}
+
 func TestAsyncTransportAdmission(t *testing.T) {
 	ctx := context.Background()
 	tests := []struct {
-		name         string
-		dispatchMode string
-		redis        bool
-		sql          bool
-		wantInvalid  bool
+		name        string
+		redis       bool
+		sql         bool
+		wantInvalid bool
 	}{
-		{name: "async neither", dispatchMode: "async", wantInvalid: true},
-		{name: "default async neither", wantInvalid: true},
-		{name: "async Redis", dispatchMode: "async", redis: true},
-		{name: "async SQL", dispatchMode: "async", sql: true},
-		{name: "async both", dispatchMode: "async", redis: true, sql: true, wantInvalid: true},
-		{name: "sync neither", dispatchMode: "sync"},
+		{name: "neither transport", wantInvalid: true},
+		{name: "redis", redis: true},
+		{name: "sql", sql: true},
+		{name: "both", redis: true, sql: true, wantInvalid: true},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			gw := newTestAsyncGateway("test-transport-" + strings.ReplaceAll(strings.ToLower(tt.name), " ", "-"))
-			gw.Spec.Processor.DispatchMode = tt.dispatchMode
-			gw.Spec.Processor.AsyncConfig.Redis = nil
 			if tt.redis {
 				gw.Spec.Processor.AsyncConfig.Redis = &batchv1alpha1.AsyncRedisSpec{}
 			}
 			if tt.sql {
 				gw.Spec.Processor.AsyncConfig.SQL = &batchv1alpha1.AsyncSQLSpec{}
-			}
-			if tt.dispatchMode == "sync" {
-				gw.Spec.Processor.GlobalInferenceGateway = &batchv1alpha1.InferenceGatewaySpec{URL: testInferenceGatewayURL}
-				gw.Spec.Processor.ModelGateways = nil
 			}
 			err := k8sClient.Create(ctx, gw)
 			if tt.wantInvalid {
@@ -160,8 +272,7 @@ func TestValidateSpecAllowsSQLDistinctResultQueues(t *testing.T) {
 	g.Spec.Processor.AsyncConfig.Redis = nil
 	g.Spec.Processor.AsyncConfig.SQL = &batchv1alpha1.AsyncSQLSpec{}
 	g.Spec.Processor.AsyncConfig.ResultPollTimeout = testDuration30s
-	g.Spec.Processor.GlobalInferenceGateway = nil
-	g.Spec.Processor.ModelGateways = map[string]batchv1alpha1.InferenceGatewaySpec{
+	g.Spec.Processor.ModelGateways = map[string]batchv1alpha1.ModelGatewaySpec{
 		"model-a": {InferencePoolName: "pool-a"},
 		"model-b": {InferencePoolName: "pool-b"},
 	}
@@ -176,8 +287,7 @@ func TestValidateSpecRejectsSQLSharedResultQueue(t *testing.T) {
 	g.Spec.Processor.AsyncConfig.Redis = nil
 	g.Spec.Processor.AsyncConfig.SQL = &batchv1alpha1.AsyncSQLSpec{}
 	g.Spec.Processor.AsyncConfig.ResultPollTimeout = testDuration30s
-	g.Spec.Processor.GlobalInferenceGateway = nil
-	g.Spec.Processor.ModelGateways = map[string]batchv1alpha1.InferenceGatewaySpec{
+	g.Spec.Processor.ModelGateways = map[string]batchv1alpha1.ModelGatewaySpec{
 		"model-a": {InferencePoolName: "pool-a", ResultQueueName: "result-shared", RequestQueueName: "request-a"},
 		"model-b": {InferencePoolName: "pool-b", ResultQueueName: "result-shared", RequestQueueName: "request-b"},
 	}
@@ -192,8 +302,7 @@ func TestValidateSpecRejectsSQLSharedInferencePool(t *testing.T) {
 	g.Spec.Processor.AsyncConfig.Redis = nil
 	g.Spec.Processor.AsyncConfig.SQL = &batchv1alpha1.AsyncSQLSpec{}
 	g.Spec.Processor.AsyncConfig.ResultPollTimeout = testDuration30s
-	g.Spec.Processor.GlobalInferenceGateway = nil
-	g.Spec.Processor.ModelGateways = map[string]batchv1alpha1.InferenceGatewaySpec{
+	g.Spec.Processor.ModelGateways = map[string]batchv1alpha1.ModelGatewaySpec{
 		"model-a": {InferencePoolName: "shared-pool", RequestQueueName: "request-a", ResultQueueName: "result-a"},
 		"model-b": {InferencePoolName: "shared-pool", RequestQueueName: "request-b", ResultQueueName: "result-b"},
 	}
@@ -213,8 +322,7 @@ func TestValidateSpecAllowsSQLRequestQueueCoverage(t *testing.T) {
 		},
 	}
 	g.Spec.Processor.AsyncConfig.ResultPollTimeout = testDuration30s
-	g.Spec.Processor.GlobalInferenceGateway = nil
-	g.Spec.Processor.ModelGateways = map[string]batchv1alpha1.InferenceGatewaySpec{
+	g.Spec.Processor.ModelGateways = map[string]batchv1alpha1.ModelGatewaySpec{
 		"model-a": {
 			InferencePoolName: "pool-a",
 			RequestQueueName:  "request-a",
@@ -242,8 +350,7 @@ func TestValidateSpecRejectsSQLDuplicateQueueNames(t *testing.T) {
 		},
 	}
 	g.Spec.Processor.AsyncConfig.ResultPollTimeout = testDuration30s
-	g.Spec.Processor.GlobalInferenceGateway = nil
-	g.Spec.Processor.ModelGateways = map[string]batchv1alpha1.InferenceGatewaySpec{
+	g.Spec.Processor.ModelGateways = map[string]batchv1alpha1.ModelGatewaySpec{
 		"model-a": {
 			InferencePoolName: "pool-a",
 			RequestQueueName:  "request-a",
@@ -286,8 +393,7 @@ func TestValidateSpecSQLPrometheusGateRequiresURL(t *testing.T) {
 			g.Spec.Processor.AsyncConfig.WorkerPools = []batchv1alpha1.AsyncWorkerPool{{Name: "default", Workers: 1, GateType: tt.workerGate}}
 			g.Spec.Processor.AsyncConfig.PrometheusURL = tt.url
 			g.Spec.Processor.AsyncConfig.ResultPollTimeout = testDuration30s
-			g.Spec.Processor.GlobalInferenceGateway = nil
-			g.Spec.Processor.ModelGateways = map[string]batchv1alpha1.InferenceGatewaySpec{
+			g.Spec.Processor.ModelGateways = map[string]batchv1alpha1.ModelGatewaySpec{
 				"model-a": {InferencePoolName: "pool-a"},
 			}
 
@@ -308,8 +414,7 @@ func TestValidateSpecDoesNotValidateRedisPrometheusGate(t *testing.T) {
 	g.Spec.Processor.AsyncConfig.ResultPollTimeout = testDuration30s
 	g.Spec.Processor.AsyncConfig.WorkerPools = []batchv1alpha1.AsyncWorkerPool{{Name: "default", Workers: 1, GateType: "prometheus-budget"}}
 	g.Spec.Processor.AsyncConfig.Redis.GateType = "prometheus-saturation"
-	g.Spec.Processor.GlobalInferenceGateway = nil
-	g.Spec.Processor.ModelGateways = map[string]batchv1alpha1.InferenceGatewaySpec{
+	g.Spec.Processor.ModelGateways = map[string]batchv1alpha1.ModelGatewaySpec{
 		"model-a": {InferencePoolName: "pool-a"},
 	}
 
@@ -327,8 +432,7 @@ func TestValidateSpecAllowsSQLDefaultRequestQueueCoverage(t *testing.T) {
 		},
 	}
 	g.Spec.Processor.AsyncConfig.ResultPollTimeout = testDuration30s
-	g.Spec.Processor.GlobalInferenceGateway = nil
-	g.Spec.Processor.ModelGateways = map[string]batchv1alpha1.InferenceGatewaySpec{
+	g.Spec.Processor.ModelGateways = map[string]batchv1alpha1.ModelGatewaySpec{
 		"model-a": {InferencePoolName: "pool-a"},
 	}
 
@@ -344,8 +448,7 @@ func TestValidateSpecRejectsSQLMissingRequestQueue(t *testing.T) {
 		QueuesConfig: []batchv1alpha1.AsyncQueueConfig{{Name: "request-a"}},
 	}
 	g.Spec.Processor.AsyncConfig.ResultPollTimeout = testDuration30s
-	g.Spec.Processor.GlobalInferenceGateway = nil
-	g.Spec.Processor.ModelGateways = map[string]batchv1alpha1.InferenceGatewaySpec{
+	g.Spec.Processor.ModelGateways = map[string]batchv1alpha1.ModelGatewaySpec{
 		"model-a": {
 			InferencePoolName: "pool-a",
 			RequestQueueName:  "request-a",
@@ -371,8 +474,7 @@ func TestValidateSpecRejectsSQLMissingDefaultRequestQueue(t *testing.T) {
 		QueuesConfig: []batchv1alpha1.AsyncQueueConfig{{Name: "request-other"}},
 	}
 	g.Spec.Processor.AsyncConfig.ResultPollTimeout = testDuration30s
-	g.Spec.Processor.GlobalInferenceGateway = nil
-	g.Spec.Processor.ModelGateways = map[string]batchv1alpha1.InferenceGatewaySpec{
+	g.Spec.Processor.ModelGateways = map[string]batchv1alpha1.ModelGatewaySpec{
 		"model-a": {InferencePoolName: "pool-a"},
 	}
 
@@ -412,16 +514,19 @@ func TestReconcile(t *testing.T) {
 	if err != nil {
 		t.Fatalf("NewHelmRenderer() error: %v", err)
 	}
+	asyncHelmRenderer, err := NewHelmRenderer("../../llm-d-async/charts/llm-d-async", testImages(), tlspkg.ProfileValues{})
+	if err != nil {
+		t.Fatalf("NewHelmRenderer(async) error: %v", err)
+	}
 
 	fakeRecorder := record.NewFakeRecorder(100)
 	resyncTimeout := 5 * time.Minute
 	reconcileTimeout := 30 * time.Second
 
-	reconciler := NewLLMBatchGatewayReconciler(k8sClient, k8sClient.Scheme(), batchGWHelmRenderer, nil, fakeRecorder, resyncTimeout, reconcileTimeout)
+	reconciler := NewLLMBatchGatewayReconciler(k8sClient, k8sClient.Scheme(), batchGWHelmRenderer, asyncHelmRenderer, fakeRecorder, resyncTimeout, reconcileTimeout)
 
-	t.Run("defaults omitted dispatch mode to async", func(t *testing.T) {
-		gw := newTestAsyncGateway("test-default-async")
-		gw.Spec.Processor.DispatchMode = ""
+	t.Run("renders async dispatch mode in the processor config", func(t *testing.T) {
+		gw := newTestGateway("test-renders-async")
 		if err := k8sClient.Create(ctx, gw); err != nil {
 			t.Fatalf("creating CR: %v", err)
 		}
@@ -429,10 +534,7 @@ func TestReconcile(t *testing.T) {
 
 		var stored batchv1alpha1.LLMBatchGateway
 		if err := k8sClient.Get(ctx, types.NamespacedName{Name: gw.Name, Namespace: gw.Namespace}, &stored); err != nil {
-			t.Fatalf("getting defaulted CR: %v", err)
-		}
-		if stored.Spec.Processor.DispatchMode != dispatchModeAsync {
-			t.Fatalf("dispatchMode = %q, want %q", stored.Spec.Processor.DispatchMode, dispatchModeAsync)
+			t.Fatalf("getting stored CR: %v", err)
 		}
 
 		values := specToBatchHelmValues(&stored, testSecretName(&stored), testImages(), tlspkg.ProfileValues{})
@@ -446,6 +548,13 @@ func TestReconcile(t *testing.T) {
 		}
 		if got := config["dispatchMode"]; got != dispatchModeAsync {
 			t.Errorf("rendered dispatchMode = %v, want %q", got, dispatchModeAsync)
+		}
+		ad, ok := config["asyncDispatch"].(map[string]any)
+		if !ok {
+			t.Fatal("rendered asyncDispatch config missing")
+		}
+		if got := ad["resultPollTimeout"]; got != "30s" {
+			t.Errorf("rendered asyncDispatch.resultPollTimeout = %v, want 30s", got)
 		}
 	})
 
@@ -489,13 +598,21 @@ func TestReconcile(t *testing.T) {
 				t.Fatalf("listing deployments: %v", err)
 			}
 			deployCount := 0
+			hasAsyncProcessor := false
 			for _, d := range deployList.Items {
 				if isOwnedByUID(d.OwnerReferences, gw.UID) {
 					deployCount++
+					if d.Labels[labelKeyComponent] == componentAsyncProcessor {
+						hasAsyncProcessor = true
+					}
 				}
 			}
-			if deployCount != 2 {
-				t.Errorf("deployment count = %d, want 2", deployCount)
+			// 2 batch Deployments (apiserver, gc) + 1 async-processor Deployment.
+			if deployCount != 3 {
+				t.Errorf("deployment count = %d, want 3", deployCount)
+			}
+			if !hasAsyncProcessor {
+				t.Error("no async-processor deployment found")
 			}
 		})
 
@@ -542,8 +659,9 @@ func TestReconcile(t *testing.T) {
 					saCount++
 				}
 			}
-			if saCount != 3 {
-				t.Errorf("serviceaccount count = %d, want 3", saCount)
+			// 3 batch ServiceAccounts (apiserver, processor, gc) + 1 async-processor.
+			if saCount != 4 {
+				t.Errorf("serviceaccount count = %d, want 4", saCount)
 			}
 		})
 
@@ -628,7 +746,7 @@ func TestReconcile(t *testing.T) {
 			conditionTypes[c.Type] = true
 		}
 
-		for _, ct := range []string{conditionReady, conditionAPIServerAvailable, conditionProcessorAvailable, conditionGCAvailable} {
+		for _, ct := range []string{conditionReady, conditionAPIServerAvailable, conditionProcessorAvailable, conditionGCAvailable, conditionAsyncProcessorAvailable} {
 			if !conditionTypes[ct] {
 				t.Errorf("missing condition %q", ct)
 			}
@@ -752,14 +870,13 @@ func TestReconcile(t *testing.T) {
 				t.Error("grafana dashboard ConfigMap should have been deleted")
 			}
 		}
-		if cmCountAfter != cmCountBefore-1 {
-			t.Errorf("configmap count = %d, want %d (one dashboard removed)", cmCountAfter, cmCountBefore-1)
+		if cmCountAfter != cmCountBefore-2 {
+			t.Errorf("configmap count = %d, want %d (batch and async dashboards removed)", cmCountAfter, cmCountBefore-2)
 		}
 	})
 
-	t.Run("sets ValidationFailed when no inference gateway configured", func(t *testing.T) {
+	t.Run("sets ValidationFailed when no model gateways configured", func(t *testing.T) {
 		gw := newTestGateway("test-validation-none")
-		gw.Spec.Processor.GlobalInferenceGateway = nil
 		gw.Spec.Processor.ModelGateways = nil
 		if err := k8sClient.Create(ctx, gw); err != nil {
 			t.Fatalf("creating CR: %v", err)
@@ -780,7 +897,7 @@ func TestReconcile(t *testing.T) {
 			t.Fatalf("getting updated CR: %v", err)
 		}
 
-		for _, condType := range []string{conditionReady, conditionAPIServerAvailable, conditionProcessorAvailable, conditionGCAvailable} {
+		for _, condType := range []string{conditionReady, conditionAPIServerAvailable, conditionProcessorAvailable, conditionGCAvailable, conditionAsyncProcessorAvailable} {
 			found := false
 			for _, c := range updated.Status.Conditions {
 				if c.Type == condType {
@@ -788,7 +905,7 @@ func TestReconcile(t *testing.T) {
 					if c.Status != metav1.ConditionFalse {
 						t.Errorf("%s status = %v, want False", condType, c.Status)
 					}
-					if c.Reason != "ValidationFailed" {
+					if c.Reason != reasonValidationFailed {
 						t.Errorf("%s reason = %v, want ValidationFailed", condType, c.Reason)
 					}
 					break
@@ -802,51 +919,7 @@ func TestReconcile(t *testing.T) {
 			t.Errorf("observedGeneration = %d, want %d", updated.Status.ObservedGeneration, updated.Generation)
 		}
 
-		assertWarningEvent(t, fakeRecorder, "ValidationFailed")
-	})
-
-	t.Run("sets ValidationFailed when both gateways configured", func(t *testing.T) {
-		gw := newTestGateway("test-validation-both")
-		gw.Spec.Processor.GlobalInferenceGateway = &batchv1alpha1.InferenceGatewaySpec{
-			URL: "http://global:8000",
-		}
-		gw.Spec.Processor.ModelGateways = map[string]batchv1alpha1.InferenceGatewaySpec{
-			"model-a": {URL: "http://model-a:8000"},
-		}
-		if err := k8sClient.Create(ctx, gw); err != nil {
-			t.Fatalf("creating CR: %v", err)
-		}
-		t.Cleanup(func() {
-			_ = k8sClient.Delete(ctx, gw)
-		})
-
-		_, err := reconciler.Reconcile(ctx, reconcile.Request{
-			NamespacedName: types.NamespacedName{Name: gw.Name, Namespace: gw.Namespace},
-		})
-		if err != nil {
-			t.Fatalf("Reconcile() should not return error for validation failure, got: %v", err)
-		}
-
-		var updated batchv1alpha1.LLMBatchGateway
-		if err := k8sClient.Get(ctx, types.NamespacedName{Name: gw.Name, Namespace: gw.Namespace}, &updated); err != nil {
-			t.Fatalf("getting updated CR: %v", err)
-		}
-
-		for _, c := range updated.Status.Conditions {
-			if c.Type == conditionReady {
-				if c.Status != metav1.ConditionFalse {
-					t.Errorf("Ready status = %v, want False", c.Status)
-				}
-				if c.Reason != "ValidationFailed" {
-					t.Errorf("Ready reason = %v, want ValidationFailed", c.Reason)
-				}
-				if updated.Status.ObservedGeneration != updated.Generation {
-					t.Errorf("observedGeneration = %d, want %d", updated.Status.ObservedGeneration, updated.Generation)
-				}
-				return
-			}
-		}
-		t.Error("missing Ready condition")
+		assertWarningEvent(t, fakeRecorder, reasonValidationFailed)
 	})
 
 	t.Run("sets ReferenceNotPermitted when no ReferenceGrant exists", func(t *testing.T) {
@@ -1028,6 +1101,19 @@ func TestReconcile(t *testing.T) {
 		}
 	})
 
+	t.Run("missing asyncConfig is rejected by the CRD", func(t *testing.T) {
+		gw := newTestGateway("test-no-asyncconfig-crd")
+		gw.Spec.Processor.AsyncConfig = nil
+
+		err := k8sClient.Create(ctx, gw)
+		if !apierrors.IsInvalid(err) {
+			t.Fatalf("Create() without asyncConfig error = %v, want Invalid", err)
+		}
+		if !strings.Contains(err.Error(), "asyncConfig") {
+			t.Errorf("Create() error = %v, want an asyncConfig validation error", err)
+		}
+	})
+
 	t.Run("apiserver config change updates ConfigMap and Deployment", func(t *testing.T) {
 		gw := newTestGateway("test-api-config")
 		if err := k8sClient.Create(ctx, gw); err != nil {
@@ -1137,26 +1223,6 @@ func TestReconcile(t *testing.T) {
 		if checksumAfter == checksumBefore {
 			t.Error("processor statefulset pod template not updated after config change")
 		}
-	})
-
-	t.Run("legacy processor.config.inferenceObjective lands on the gateway", func(t *testing.T) {
-		gw := newTestGateway("test-legacy-objective")
-		gw.Spec.Processor.Config = &batchv1alpha1.ProcessorConfigSpec{InferenceObjective: "batch-sheddable"}
-		if err := k8sClient.Create(ctx, gw); err != nil {
-			t.Fatalf("creating CR: %v", err)
-		}
-		t.Cleanup(func() { _ = k8sClient.Delete(ctx, gw) })
-
-		_, err := reconciler.Reconcile(ctx, reconcile.Request{
-			NamespacedName: types.NamespacedName{Name: gw.Name, Namespace: gw.Namespace},
-		})
-		if err != nil {
-			t.Fatalf("Reconcile() error: %v", err)
-		}
-
-		cm := getOwnedConfigMap(ctx, t, gw, "processor")
-		assertConfigMapContains(t, cm, `inference_objective: "batch-sheddable"`)
-		assertWarningEvent(t, fakeRecorder, reasonDeprecatedField)
 	})
 
 	t.Run("gc config change updates ConfigMap and Deployment", func(t *testing.T) {
@@ -1273,14 +1339,12 @@ func TestReconcile(t *testing.T) {
 	})
 }
 
+// newTestAsyncGateway returns a gateway whose asyncConfig carries only an
+// inference gateway, so individual tests add the transport (Redis or SQL)
+// they exercise.
 func newTestAsyncGateway(name string) *batchv1alpha1.LLMBatchGateway {
 	gw := newTestGateway(name)
 	concurrency := int32(8)
-	gw.Spec.Processor.DispatchMode = dispatchModeAsync
-	gw.Spec.Processor.GlobalInferenceGateway = nil
-	gw.Spec.Processor.ModelGateways = map[string]batchv1alpha1.InferenceGatewaySpec{
-		"sim-model": {InferencePoolName: "sim-pool"},
-	}
 	gw.Spec.Processor.AsyncConfig = &batchv1alpha1.AsyncProcessorSpec{
 		Concurrency:       &concurrency,
 		DrainTimeout:      "2m",
@@ -1288,120 +1352,283 @@ func newTestAsyncGateway(name string) *batchv1alpha1.LLMBatchGateway {
 		InferenceGateway: &batchv1alpha1.InferenceGatewaySpec{
 			URL: testInferenceGatewayURL,
 		},
-		Redis: &batchv1alpha1.AsyncRedisSpec{},
 	}
 	return gw
 }
 
-func TestReconcileAsync(t *testing.T) {
+// TestRemovedModelGatewayFieldsArePruned pins the narrowed modelGateways API:
+// fields that the operator no longer renders (sync-era gateway tuning knobs)
+// are dropped by the API server instead of being accepted and silently ignored.
+func TestRemovedModelGatewayFieldsArePruned(t *testing.T) {
+	ctx := context.Background()
+
+	obj := &unstructured.Unstructured{}
+	obj.SetUnstructuredContent(map[string]any{
+		"apiVersion": batchv1alpha1.GroupVersion.String(),
+		"kind":       llmBatchGatewayKind,
+		"metadata": map[string]any{
+			"name":      "test-pruned-fields",
+			"namespace": "default",
+		},
+		"spec": map[string]any{
+			"secretRef": map[string]any{"name": "test-secrets"},
+			// Removed top-level fields: pruned silently, not rejected.
+			"redis":       map[string]any{"enableTLS": true, "insecure": true},
+			"fileStorage": map[string]any{"s3": map[string]any{"bucket": "llm-d-batch-gateway"}},
+			"apiServer":   map[string]any{},
+			"gc":          map[string]any{},
+			"processor": map[string]any{
+				"dispatchMode": "sync",
+				"globalInferenceGateway": map[string]any{
+					"url": "http://legacy-gateway:8000",
+				},
+				"modelGateways": map[string]any{
+					"model-a": map[string]any{
+						"inferencePoolName": "pool-a",
+						// Removed sync-era knobs: must not survive admission.
+						"requestTimeout":        "5m",
+						"maxRetries":            3,
+						"initialBackoff":        "1s",
+						"maxBackoff":            "60s",
+						"tlsCACertFile":         "/ca.crt",
+						"tlsClientCertFile":     "/tls.crt",
+						"tlsClientKeyFile":      "/tls.key",
+						"tlsInsecureSkipVerify": false,
+						"url":                   "http://gateway:8000",
+					},
+				},
+				"asyncConfig": map[string]any{
+					"resultPollTimeout": "30s",
+					// A transport is required; Redis is enough for this fixture.
+					"redis": map[string]any{},
+					// asyncConfig.inferenceGateway only keeps url.
+					"inferenceGateway": map[string]any{
+						"url":               "http://epp:8081",
+						"inferencePoolName": "not-a-pool",
+					},
+				},
+			},
+		},
+	})
+
+	if err := k8sClient.Create(ctx, obj); err != nil {
+		t.Fatalf("creating CR with removed fields: %v", err)
+	}
+	t.Cleanup(func() { _ = k8sClient.Delete(ctx, obj) })
+
+	got := &unstructured.Unstructured{}
+	got.SetGroupVersionKind(batchv1alpha1.GroupVersion.WithKind(llmBatchGatewayKind))
+	if err := k8sClient.Get(ctx, types.NamespacedName{Name: obj.GetName(), Namespace: obj.GetNamespace()}, got); err != nil {
+		t.Fatalf("getting stored CR: %v", err)
+	}
+
+	for _, removed := range []string{"redis"} {
+		if _, ok := got.Object["spec"].(map[string]any)[removed]; ok {
+			t.Errorf("spec.%s still present after admission, want pruned", removed)
+		}
+	}
+	processorSpec := got.Object["spec"].(map[string]any)["processor"].(map[string]any)
+	for _, removed := range []string{"dispatchMode", "globalInferenceGateway"} {
+		if _, ok := processorSpec[removed]; ok {
+			t.Errorf("spec.processor.%s still present after admission, want pruned", removed)
+		}
+	}
+
+	model, found, err := unstructured.NestedMap(got.Object, "spec", "processor", "modelGateways", "model-a")
+	if err != nil || !found {
+		t.Fatalf("reading modelGateways.model-a: found=%v err=%v", found, err)
+	}
+	if got := model["inferencePoolName"]; got != "pool-a" {
+		t.Errorf("modelGateways.model-a.inferencePoolName = %v, want pool-a", got)
+	}
+	for _, removed := range []string{
+		"url", "requestTimeout", "maxRetries", "initialBackoff", "maxBackoff",
+		"tlsCACertFile", "tlsClientCertFile", "tlsClientKeyFile", "tlsInsecureSkipVerify",
+	} {
+		if _, ok := model[removed]; ok {
+			t.Errorf("modelGateways.model-a still carries removed field %q", removed)
+		}
+	}
+
+	igw, found, err := unstructured.NestedMap(got.Object, "spec", "processor", "asyncConfig", "inferenceGateway")
+	if err != nil || !found {
+		t.Fatalf("reading asyncConfig.inferenceGateway: found=%v err=%v", found, err)
+	}
+	if len(igw) != 1 || igw["url"] != "http://epp:8081" {
+		t.Errorf("asyncConfig.inferenceGateway = %v, want only url=http://epp:8081", igw)
+	}
+}
+
+// TestSamplesValidateAgainstCRD dry-run creates every sample manifest against
+// the installed CRD, mirroring the integration workflow's sample validation
+// step. Without this, a sample that drifts from the schema (for example one
+// still setting a removed field) only fails in CI, minutes into a cluster
+// deploy.
+func TestSamplesValidateAgainstCRD(t *testing.T) {
+	ctx := context.Background()
+
+	paths, err := filepath.Glob("../../config/samples/batch_v1alpha1_*.yaml")
+	if err != nil {
+		t.Fatalf("globbing samples: %v", err)
+	}
+	if len(paths) == 0 {
+		t.Fatal("no sample manifests found")
+	}
+
+	for _, path := range paths {
+		t.Run(filepath.Base(path), func(t *testing.T) {
+			data, err := os.ReadFile(path)
+			if err != nil {
+				t.Fatalf("reading %s: %v", path, err)
+			}
+
+			decoder := utilyaml.NewYAMLOrJSONDecoder(bytes.NewReader(data), 4096)
+			found := 0
+			for {
+				var obj unstructured.Unstructured
+				if err := decoder.Decode(&obj); err != nil {
+					if errors.Is(err, io.EOF) {
+						break
+					}
+					t.Fatalf("decoding %s: %v", path, err)
+				}
+				if len(obj.Object) == 0 || obj.GetKind() != llmBatchGatewayKind {
+					continue
+				}
+				found++
+
+				if obj.GetNamespace() == "" {
+					obj.SetNamespace("default")
+				}
+				// Strict validation matches `kubectl apply`, which is what the
+				// integration workflow runs; a plain create would prune unknown
+				// fields instead of rejecting them.
+				if err := k8sClient.Create(ctx, &obj, client.DryRunAll,
+					client.FieldValidation(metav1.FieldValidationStrict)); err != nil {
+					if apierrors.IsAlreadyExists(err) {
+						continue
+					}
+					t.Errorf("%s (%s/%s) rejected by the CRD schema: %v", path, obj.GetKind(), obj.GetName(), err)
+				}
+			}
+			if found == 0 {
+				t.Errorf("%s contains no %s manifest", path, llmBatchGatewayKind)
+			}
+		})
+	}
+}
+
+func TestAllConditionTypes(t *testing.T) {
+	got := allConditionTypes()
+
+	want := []string{
+		conditionReady,
+		conditionAPIServerAvailable,
+		conditionProcessorAvailable,
+		conditionGCAvailable,
+		conditionAsyncProcessorAvailable,
+	}
+	if len(got) != len(want) {
+		t.Fatalf("allConditionTypes() = %v, want %v", got, want)
+	}
+	for i := range want {
+		if got[i] != want[i] {
+			t.Errorf("allConditionTypes()[%d] = %q, want %q", i, got[i], want[i])
+		}
+	}
+}
+
+func TestRecordFailure(t *testing.T) {
+	ctx := context.Background()
+
+	gw := newTestGateway("test-record-failure")
+	if err := k8sClient.Create(ctx, gw); err != nil {
+		t.Fatalf("creating CR: %v", err)
+	}
+	t.Cleanup(func() { _ = k8sClient.Delete(ctx, gw) })
+
+	recorder := record.NewFakeRecorder(10)
+	r := NewLLMBatchGatewayReconciler(k8sClient, k8sClient.Scheme(), nil, nil, recorder, time.Minute, time.Minute)
+
+	failure := statusFailure{
+		reason:     reasonRenderFailed,
+		message:    "batch-gateway chart render failed: boom",
+		conditions: allConditionTypes(),
+	}
+	if err := r.recordFailure(ctx, gw, failure); err != nil {
+		t.Fatalf("recordFailure() error: %v", err)
+	}
+
+	t.Run("marks every condition false", func(t *testing.T) {
+		var updated batchv1alpha1.LLMBatchGateway
+		if err := k8sClient.Get(ctx, types.NamespacedName{Name: gw.Name, Namespace: gw.Namespace}, &updated); err != nil {
+			t.Fatalf("getting updated CR: %v", err)
+		}
+
+		for _, condType := range allConditionTypes() {
+			cond := meta.FindStatusCondition(updated.Status.Conditions, condType)
+			if cond == nil {
+				t.Errorf("condition %s not set", condType)
+				continue
+			}
+			if cond.Status != metav1.ConditionFalse {
+				t.Errorf("%s status = %v, want False", condType, cond.Status)
+			}
+			if cond.Reason != failure.reason {
+				t.Errorf("%s reason = %q, want %q", condType, cond.Reason, failure.reason)
+			}
+			if cond.Message != failure.message {
+				t.Errorf("%s message = %q, want %q", condType, cond.Message, failure.message)
+			}
+			if cond.ObservedGeneration != updated.Generation {
+				t.Errorf("%s observedGeneration = %d, want %d", condType, cond.ObservedGeneration, updated.Generation)
+			}
+		}
+	})
+
+	t.Run("emits a warning event", func(t *testing.T) {
+		select {
+		case ev := <-recorder.Events:
+			if !strings.Contains(ev, corev1.EventTypeWarning) ||
+				!strings.Contains(ev, failure.reason) ||
+				!strings.Contains(ev, failure.message) {
+				t.Errorf("event = %q, want warning with reason %q and message %q", ev, failure.reason, failure.message)
+			}
+		default:
+			t.Error("expected a warning event, got none")
+		}
+	})
+}
+
+func TestReconcileNilAsyncRenderer(t *testing.T) {
 	ctx := context.Background()
 
 	batchGWHelmRenderer, err := NewHelmRenderer("../../batch-gateway/charts/batch-gateway", testImages(), tlspkg.ProfileValues{})
 	if err != nil {
-		t.Fatalf("NewHelmRenderer(batch) error: %v", err)
-	}
-	asyncHelmRenderer, err := NewHelmRenderer("../../llm-d-async/charts/llm-d-async", testImages(), tlspkg.ProfileValues{})
-	if err != nil {
-		t.Fatalf("NewHelmRenderer(async) error: %v", err)
+		t.Fatalf("NewHelmRenderer() error: %v", err)
 	}
 
 	fakeRecorder := record.NewFakeRecorder(100)
 	resyncTimeout := 5 * time.Minute
 	reconcileTimeout := 30 * time.Second
 
-	reconciler := NewLLMBatchGatewayReconciler(k8sClient, k8sClient.Scheme(), batchGWHelmRenderer, asyncHelmRenderer, fakeRecorder, resyncTimeout, reconcileTimeout)
+	nilAsyncReconciler := NewLLMBatchGatewayReconciler(k8sClient, k8sClient.Scheme(), batchGWHelmRenderer, nil, fakeRecorder, resyncTimeout, reconcileTimeout)
 
-	t.Run("creates async-processor deployment alongside batch resources", func(t *testing.T) {
-		gw := newTestAsyncGateway("test-async-create")
-		if err := k8sClient.Create(ctx, gw); err != nil {
-			t.Fatalf("creating CR: %v", err)
-		}
-		t.Cleanup(func() { _ = k8sClient.Delete(ctx, gw) })
+	gw := newTestGateway("test-async-nil-renderer")
+	if err := k8sClient.Create(ctx, gw); err != nil {
+		t.Fatalf("creating CR: %v", err)
+	}
+	t.Cleanup(func() { _ = k8sClient.Delete(ctx, gw) })
 
-		result, err := reconciler.Reconcile(ctx, reconcile.Request{
-			NamespacedName: types.NamespacedName{Name: gw.Name, Namespace: gw.Namespace},
-		})
-		if err != nil {
-			t.Fatalf("Reconcile() error: %v", err)
-		}
-		if result.RequeueAfter != resyncTimeout {
-			t.Errorf("RequeueAfter = %v, want %v", result.RequeueAfter, resyncTimeout)
-		}
-
-		var deployList appsv1.DeploymentList
-		if err := k8sClient.List(ctx, &deployList); err != nil {
-			t.Fatalf("listing deployments: %v", err)
-		}
-		deployCount := 0
-		hasAsyncProcessor := false
-		for _, d := range deployList.Items {
-			if !isOwnedByUID(d.OwnerReferences, gw.UID) {
-				continue
-			}
-			deployCount++
-			if d.Labels[labelKeyComponent] == componentAsyncProcessor {
-				hasAsyncProcessor = true
-			}
-		}
-		// 2 batch Deployments (apiserver, gc) + 1 async-processor Deployment.
-		if deployCount != 3 {
-			t.Errorf("deployment count = %d, want 3", deployCount)
-		}
-		if !hasAsyncProcessor {
-			t.Error("no async-processor deployment found")
-		}
+	_, err = nilAsyncReconciler.Reconcile(ctx, reconcile.Request{
+		NamespacedName: types.NamespacedName{Name: gw.Name, Namespace: gw.Namespace},
 	})
-
-	t.Run("sets AsyncProcessorAvailable condition", func(t *testing.T) {
-		gw := newTestAsyncGateway("test-async-condition")
-		if err := k8sClient.Create(ctx, gw); err != nil {
-			t.Fatalf("creating CR: %v", err)
-		}
-		t.Cleanup(func() { _ = k8sClient.Delete(ctx, gw) })
-
-		_, err := reconciler.Reconcile(ctx, reconcile.Request{
-			NamespacedName: types.NamespacedName{Name: gw.Name, Namespace: gw.Namespace},
-		})
-		if err != nil {
-			t.Fatalf("Reconcile() error: %v", err)
-		}
-
-		var updated batchv1alpha1.LLMBatchGateway
-		if err := k8sClient.Get(ctx, types.NamespacedName{Name: gw.Name, Namespace: gw.Namespace}, &updated); err != nil {
-			t.Fatalf("getting updated CR: %v", err)
-		}
-
-		found := false
-		for _, c := range updated.Status.Conditions {
-			if c.Type == conditionAsyncProcessorAvailable {
-				found = true
-				break
-			}
-		}
-		if !found {
-			t.Errorf("missing condition %q", conditionAsyncProcessorAvailable)
-		}
-	})
-
-	t.Run("nil async renderer returns error for async mode", func(t *testing.T) {
-		nilAsyncReconciler := NewLLMBatchGatewayReconciler(k8sClient, k8sClient.Scheme(), batchGWHelmRenderer, nil, fakeRecorder, resyncTimeout, reconcileTimeout)
-
-		gw := newTestAsyncGateway("test-async-nil-renderer")
-		if err := k8sClient.Create(ctx, gw); err != nil {
-			t.Fatalf("creating CR: %v", err)
-		}
-		t.Cleanup(func() { _ = k8sClient.Delete(ctx, gw) })
-
-		_, err := nilAsyncReconciler.Reconcile(ctx, reconcile.Request{
-			NamespacedName: types.NamespacedName{Name: gw.Name, Namespace: gw.Namespace},
-		})
-		if err == nil {
-			t.Fatal("Reconcile() expected error for nil async renderer, got nil")
-		}
-		if !strings.Contains(err.Error(), "async helm renderer") {
-			t.Errorf("error = %v, want mention of async helm renderer", err)
-		}
-	})
+	if err == nil {
+		t.Fatal("Reconcile() expected error for nil async renderer, got nil")
+	}
+	if !strings.Contains(err.Error(), "async helm renderer") {
+		t.Errorf("error = %v, want mention of async helm renderer", err)
+	}
 }
 
 func TestConditionHelpers(t *testing.T) {
@@ -1422,6 +1649,99 @@ func TestConditionHelpers(t *testing.T) {
 	}
 	if got := conditionMessage(false, "ok", "bad"); got != "bad" {
 		t.Errorf("conditionMessage(false) = %v, want bad", got)
+	}
+}
+
+func TestSetComponentAvailableCondition(t *testing.T) {
+	tests := []struct {
+		name        string
+		component   componentCondition
+		status      *batchv1alpha1.ComponentReplicaStatus
+		wantReady   bool
+		wantReason  string
+		wantMessage string
+	}{
+		{
+			name:        "single replica ready",
+			component:   processorCondition,
+			status:      &batchv1alpha1.ComponentReplicaStatus{Replicas: 1, ReadyReplicas: 1},
+			wantReady:   true,
+			wantReason:  reasonAvailable,
+			wantMessage: "Processor: 1/1 replicas ready",
+		},
+		{
+			name:        "all replicas ready",
+			component:   apiServerCondition,
+			status:      &batchv1alpha1.ComponentReplicaStatus{Replicas: 3, ReadyReplicas: 3},
+			wantReady:   true,
+			wantReason:  reasonAvailable,
+			wantMessage: "API server: 3/3 replicas ready",
+		},
+		{
+			name:        "partial rollout is not available",
+			component:   processorCondition,
+			status:      &batchv1alpha1.ComponentReplicaStatus{Replicas: 2, ReadyReplicas: 1},
+			wantReady:   false,
+			wantReason:  reasonUnavailable,
+			wantMessage: "Processor: 1/2 replicas ready",
+		},
+		{
+			name:        "no ready replicas",
+			component:   asyncProcessorCondition,
+			status:      &batchv1alpha1.ComponentReplicaStatus{Replicas: 1},
+			wantReady:   false,
+			wantReason:  reasonUnavailable,
+			wantMessage: "Async processor: 0/1 replicas ready",
+		},
+		{
+			name:        "scaled to zero is not available",
+			component:   apiServerCondition,
+			status:      &batchv1alpha1.ComponentReplicaStatus{Replicas: 0, ReadyReplicas: 0},
+			wantReady:   false,
+			wantReason:  reasonUnavailable,
+			wantMessage: "API server: 0/0 replicas ready",
+		},
+		{
+			name:        "component not deployed",
+			component:   gcCondition,
+			status:      nil,
+			wantReady:   false,
+			wantReason:  reasonUnavailable,
+			wantMessage: "GC: 0/0 replicas ready",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			gw := newTestGateway("test-availability")
+			gw.Generation = 7
+
+			gotReady := setComponentAvailableCondition(gw, tt.component, tt.status)
+			if gotReady != tt.wantReady {
+				t.Errorf("available = %v, want %v", gotReady, tt.wantReady)
+			}
+
+			cond := meta.FindStatusCondition(gw.Status.Conditions, tt.component.conditionType)
+			if cond == nil {
+				t.Fatal("condition not set")
+			}
+			wantStatus := metav1.ConditionFalse
+			if tt.wantReady {
+				wantStatus = metav1.ConditionTrue
+			}
+			if cond.Status != wantStatus {
+				t.Errorf("status = %v, want %v", cond.Status, wantStatus)
+			}
+			if cond.Reason != tt.wantReason {
+				t.Errorf("reason = %v, want %v", cond.Reason, tt.wantReason)
+			}
+			if cond.Message != tt.wantMessage {
+				t.Errorf("message = %q, want %q", cond.Message, tt.wantMessage)
+			}
+			if cond.ObservedGeneration != gw.Generation {
+				t.Errorf("observedGeneration = %d, want %d", cond.ObservedGeneration, gw.Generation)
+			}
+		})
 	}
 }
 
@@ -1600,8 +1920,7 @@ func TestValidateSpecRejectsSQLDefaultQueuesWithoutGatewayURL(t *testing.T) {
 	g.Spec.Processor.AsyncConfig.SQL = &batchv1alpha1.AsyncSQLSpec{}
 	g.Spec.Processor.AsyncConfig.ResultPollTimeout = testDuration30s
 	g.Spec.Processor.AsyncConfig.InferenceGateway = nil
-	g.Spec.Processor.GlobalInferenceGateway = nil
-	g.Spec.Processor.ModelGateways = map[string]batchv1alpha1.InferenceGatewaySpec{
+	g.Spec.Processor.ModelGateways = map[string]batchv1alpha1.ModelGatewaySpec{
 		"model-a": {InferencePoolName: "pool-a"},
 	}
 
@@ -1620,8 +1939,7 @@ func TestValidateSpecAllowsSQLQueueGatewayURLWithoutGlobalURL(t *testing.T) {
 	}
 	g.Spec.Processor.AsyncConfig.ResultPollTimeout = testDuration30s
 	g.Spec.Processor.AsyncConfig.InferenceGateway = nil
-	g.Spec.Processor.GlobalInferenceGateway = nil
-	g.Spec.Processor.ModelGateways = map[string]batchv1alpha1.InferenceGatewaySpec{
+	g.Spec.Processor.ModelGateways = map[string]batchv1alpha1.ModelGatewaySpec{
 		"model-a": {InferencePoolName: "pool-a"},
 	}
 

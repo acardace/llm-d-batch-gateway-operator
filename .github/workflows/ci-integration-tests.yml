@@ -35,8 +35,6 @@ jobs:
       fail-fast: false
       matrix:
         include:
-          - dev_profile: sync
-          - dev_profile: sync-fs
           - dev_profile: async
           - dev_profile: async-gate-redis
           - dev_profile: async-gate-prometheus-query

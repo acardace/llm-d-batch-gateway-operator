@@ -111,15 +111,6 @@ func kubectlGetExists(t *testing.T, resource, name, namespace string) bool {
 	return false
 }
 
-func isAsyncMode(t *testing.T, crName, namespace string) bool {
-	t.Helper()
-	cr := kubectlGetJSON(t, llmBatchGatewayKind, crName, namespace)
-	spec, _ := cr["spec"].(map[string]any)
-	proc, _ := spec["processor"].(map[string]any)
-	mode, _ := proc["dispatchMode"].(string)
-	return mode == "async"
-}
-
 func kubectlGetJSON(t *testing.T, resource, name, namespace string) map[string]any {
 	t.Helper()
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)

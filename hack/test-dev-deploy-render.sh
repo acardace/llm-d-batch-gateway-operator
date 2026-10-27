@@ -39,7 +39,6 @@ check_case() {
 
 check_case async default seaweedfs "http://seaweedfs.default.svc.cluster.local:8333"
 check_case async foo seaweedfs "http://seaweedfs.foo.svc.cluster.local:8333"
-check_case sync foo seaweedfs "http://seaweedfs.foo.svc.cluster.local:8333"
 check_case async-gate-redis foo seaweedfs "http://seaweedfs.foo.svc.cluster.local:8333"
 check_case async foo s3store "http://s3store.foo.svc.cluster.local:8333"
 
