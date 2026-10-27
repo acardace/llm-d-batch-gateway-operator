@@ -744,6 +744,19 @@ func validateSpec(gw *batchv1alpha1.LLMBatchGateway) error {
 				}
 			}
 		}
+		// The dispatcher requires igw_base_url on every queue; generated
+		// default queues carry none, so they need asyncConfig.inferenceGateway.
+		if ig := gw.Spec.Processor.AsyncConfig.InferenceGateway; ig == nil || ig.URL == "" {
+			queues := gw.Spec.Processor.AsyncConfig.SQL.QueuesConfig
+			if len(queues) == 0 {
+				queues = sqlQueueDefaults(gw)
+			}
+			for _, queue := range queues {
+				if queue.IGWBaseURL == "" {
+					return fmt.Errorf("processor.asyncConfig.inferenceGateway.url is required when SQL queue %q does not set igwBaseURL", queue.Name)
+				}
+			}
+		}
 	}
 	return nil
 }

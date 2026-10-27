@@ -1437,3 +1437,39 @@ func assertWarningEvent(t *testing.T, recorder *record.FakeRecorder, reason stri
 		}
 	}
 }
+
+func TestValidateSpecRejectsSQLDefaultQueuesWithoutGatewayURL(t *testing.T) {
+	g := minimalAsyncGateway()
+	g.Spec.Processor.AsyncConfig.Redis = nil
+	g.Spec.Processor.AsyncConfig.SQL = &batchv1alpha1.AsyncSQLSpec{}
+	g.Spec.Processor.AsyncConfig.ResultPollTimeout = testDuration30s
+	g.Spec.Processor.AsyncConfig.InferenceGateway = nil
+	g.Spec.Processor.GlobalInferenceGateway = nil
+	g.Spec.Processor.ModelGateways = map[string]batchv1alpha1.InferenceGatewaySpec{
+		"model-a": {InferencePoolName: "pool-a"},
+	}
+
+	if err := validateSpec(g); err == nil || !strings.Contains(err.Error(), "inferenceGateway.url is required") {
+		t.Fatalf("validateSpec() error = %v, want missing inference gateway URL error", err)
+	}
+}
+
+func TestValidateSpecAllowsSQLQueueGatewayURLWithoutGlobalURL(t *testing.T) {
+	g := minimalAsyncGateway()
+	g.Spec.Processor.AsyncConfig.Redis = nil
+	g.Spec.Processor.AsyncConfig.SQL = &batchv1alpha1.AsyncSQLSpec{
+		QueuesConfig: []batchv1alpha1.AsyncQueueConfig{
+			{Name: asyncRequestQueueName("pool-a"), IGWBaseURL: testInferenceGatewayURL},
+		},
+	}
+	g.Spec.Processor.AsyncConfig.ResultPollTimeout = testDuration30s
+	g.Spec.Processor.AsyncConfig.InferenceGateway = nil
+	g.Spec.Processor.GlobalInferenceGateway = nil
+	g.Spec.Processor.ModelGateways = map[string]batchv1alpha1.InferenceGatewaySpec{
+		"model-a": {InferencePoolName: "pool-a"},
+	}
+
+	if err := validateSpec(g); err != nil {
+		t.Fatalf("validateSpec() error = %v, want nil", err)
+	}
+}
