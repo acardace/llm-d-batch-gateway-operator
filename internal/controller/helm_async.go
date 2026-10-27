@@ -75,11 +75,12 @@ func specToAsyncHelmValues(gw *batchv1alpha1.LLMBatchGateway, secretName string,
 	setIfNotEmpty(ap, "prometheusURL", ac.PrometheusURL)
 	setIfNotEmpty(ap, "prometheusCacheTTL", ac.PrometheusCacheTTL)
 
+	gatewayURL := ""
+	if ac.InferenceGateway != nil {
+		gatewayURL = ac.InferenceGateway.URL
+	}
+
 	if ac.Redis != nil {
-		gatewayURL := ""
-		if ac.InferenceGateway != nil {
-			gatewayURL = ac.InferenceGateway.URL
-		}
 		transportConfig := map[string]any{
 			"urlSecret": map[string]any{
 				"name": secretName,
@@ -110,10 +111,6 @@ func specToAsyncHelmValues(gw *batchv1alpha1.LLMBatchGateway, secretName string,
 		ap["transport"] = asyncTransportRedis
 		ap["transportConfig"] = transportConfig
 	} else if ac.SQL != nil {
-		gatewayURL := ""
-		if ac.InferenceGateway != nil {
-			gatewayURL = ac.InferenceGateway.URL
-		}
 		transportConfig := map[string]any{
 			"urlSecret": map[string]any{
 				"name": secretName,
@@ -292,16 +289,19 @@ func sortedModelGateways(gw *batchv1alpha1.LLMBatchGateway) []batchv1alpha1.Infe
 // <base>:<consumerID>, which the dispatcher honors per request, so each model
 // keeps its own result queue. The first model's queue (by sorted name) is used
 // only as the fallback.
+func sqlResultQueueNameFor(gateway batchv1alpha1.InferenceGatewaySpec) string {
+	if gateway.ResultQueueName != "" {
+		return gateway.ResultQueueName
+	}
+	return asyncResultQueueName(gateway.InferencePoolName)
+}
+
 func sqlResultQueueName(gw *batchv1alpha1.LLMBatchGateway) string {
 	gateways := sortedModelGateways(gw)
 	if len(gateways) == 0 {
 		return ""
 	}
-	gateway := gateways[0]
-	if gateway.ResultQueueName != "" {
-		return gateway.ResultQueueName
-	}
-	return asyncResultQueueName(gateway.InferencePoolName)
+	return sqlResultQueueNameFor(gateways[0])
 }
 
 func sqlRequestQueueName(gateway batchv1alpha1.InferenceGatewaySpec) string {

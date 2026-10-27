@@ -725,10 +725,7 @@ func validateSpec(gw *batchv1alpha1.LLMBatchGateway) error {
 		resultQueues := make(map[string]string, len(models))
 		for _, model := range models {
 			gateway := gw.Spec.Processor.ModelGateways[model]
-			resultQueue := gateway.ResultQueueName
-			if resultQueue == "" {
-				resultQueue = asyncResultQueueName(gateway.InferencePoolName)
-			}
+			resultQueue := sqlResultQueueNameFor(gateway)
 			if other, ok := resultQueues[resultQueue]; ok {
 				return fmt.Errorf("processor.modelGateways[%s] and processor.modelGateways[%s] resolve to the same SQL result queue %q; set distinct requestQueueName/resultQueueName pairs", other, model, resultQueue)
 			}
@@ -742,7 +739,8 @@ func validateSpec(gw *batchv1alpha1.LLMBatchGateway) error {
 				}
 				configured[queue.Name] = struct{}{}
 			}
-			for model, gateway := range gw.Spec.Processor.ModelGateways {
+			for _, model := range models {
+				gateway := gw.Spec.Processor.ModelGateways[model]
 				requestQueue := sqlRequestQueueName(gateway)
 				if _, ok := configured[requestQueue]; !ok {
 					return fmt.Errorf("processor.asyncConfig.sql.queuesConfig is missing request queue %q required by processor.modelGateways[%s]", requestQueue, model)
@@ -764,12 +762,12 @@ func validateSpec(gw *batchv1alpha1.LLMBatchGateway) error {
 		}
 		if gw.Spec.Processor.AsyncConfig.PrometheusURL == "" {
 			for _, queue := range gw.Spec.Processor.AsyncConfig.SQL.QueuesConfig {
-				if queue.GateType == gatePrometheusBudget || queue.GateType == gatePrometheusSaturation {
+				if isPrometheusGate(queue.GateType) {
 					return fmt.Errorf("processor.asyncConfig.prometheusURL is required for SQL queue %q with gate %q", queue.Name, queue.GateType)
 				}
 			}
 			for _, pool := range gw.Spec.Processor.AsyncConfig.WorkerPools {
-				if pool.GateType == gatePrometheusBudget || pool.GateType == gatePrometheusSaturation {
+				if isPrometheusGate(pool.GateType) {
 					return fmt.Errorf("processor.asyncConfig.prometheusURL is required for worker pool %q with gate %q", pool.Name, pool.GateType)
 				}
 			}
@@ -780,6 +778,10 @@ func validateSpec(gw *batchv1alpha1.LLMBatchGateway) error {
 
 func hasQueueNames(gateway batchv1alpha1.InferenceGatewaySpec) bool {
 	return gateway.RequestQueueName != "" || gateway.ResultQueueName != ""
+}
+
+func isPrometheusGate(gateType string) bool {
+	return gateType == gatePrometheusBudget || gateType == gatePrometheusSaturation
 }
 
 func conditionMessage(ok bool, trueMsg, falseMsg string) string {
