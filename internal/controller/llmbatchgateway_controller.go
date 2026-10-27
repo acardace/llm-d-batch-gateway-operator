@@ -4,7 +4,8 @@ import (
 	"context"
 	"errors"
 	"fmt"
-	"sort"
+	"maps"
+	"slices"
 	"time"
 
 	certmanagerv1 "github.com/cert-manager/cert-manager/pkg/apis/certmanager/v1"
@@ -41,8 +42,10 @@ const (
 	conditionGCAvailable             = "GCAvailable"
 	conditionAsyncProcessorAvailable = "AsyncProcessorAvailable"
 
-	dispatchModeAsync   = "async"
-	dbBackendPostgreSQL = "postgresql"
+	dispatchModeAsync        = "async"
+	dbBackendPostgreSQL      = "postgresql"
+	gatePrometheusBudget     = "prometheus-budget"
+	gatePrometheusSaturation = "prometheus-saturation"
 
 	labelKeyComponent       = "app.kubernetes.io/component"
 	labelKeyInstance        = "app.kubernetes.io/instance"
@@ -718,11 +721,7 @@ func validateSpec(gw *batchv1alpha1.LLMBatchGateway) error {
 		// The Batch Gateway processor polls <resultQueue>:<consumerID> once per
 		// model, and SQL result reads are destructive. Models sharing a result
 		// queue would consume and drop each other's results.
-		models := make([]string, 0, len(gw.Spec.Processor.ModelGateways))
-		for model := range gw.Spec.Processor.ModelGateways {
-			models = append(models, model)
-		}
-		sort.Strings(models)
+		models := slices.Sorted(maps.Keys(gw.Spec.Processor.ModelGateways))
 		resultQueues := make(map[string]string, len(models))
 		for _, model := range models {
 			gateway := gw.Spec.Processor.ModelGateways[model]
@@ -765,12 +764,12 @@ func validateSpec(gw *batchv1alpha1.LLMBatchGateway) error {
 		}
 		if gw.Spec.Processor.AsyncConfig.PrometheusURL == "" {
 			for _, queue := range gw.Spec.Processor.AsyncConfig.SQL.QueuesConfig {
-				if queue.GateType == "prometheus-budget" || queue.GateType == "prometheus-saturation" {
+				if queue.GateType == gatePrometheusBudget || queue.GateType == gatePrometheusSaturation {
 					return fmt.Errorf("processor.asyncConfig.prometheusURL is required for SQL queue %q with gate %q", queue.Name, queue.GateType)
 				}
 			}
 			for _, pool := range gw.Spec.Processor.AsyncConfig.WorkerPools {
-				if pool.GateType == "prometheus-budget" || pool.GateType == "prometheus-saturation" {
+				if pool.GateType == gatePrometheusBudget || pool.GateType == gatePrometheusSaturation {
 					return fmt.Errorf("processor.asyncConfig.prometheusURL is required for worker pool %q with gate %q", pool.Name, pool.GateType)
 				}
 			}

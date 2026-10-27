@@ -1,7 +1,8 @@
 package controller
 
 import (
-	"sort"
+	"maps"
+	"slices"
 
 	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
 
@@ -276,11 +277,7 @@ func asyncQueueValues(queueConfigs []batchv1alpha1.AsyncQueueConfig, gatewayURL 
 }
 
 func sortedModelGateways(gw *batchv1alpha1.LLMBatchGateway) []batchv1alpha1.InferenceGatewaySpec {
-	models := make([]string, 0, len(gw.Spec.Processor.ModelGateways))
-	for model := range gw.Spec.Processor.ModelGateways {
-		models = append(models, model)
-	}
-	sort.Strings(models)
+	models := slices.Sorted(maps.Keys(gw.Spec.Processor.ModelGateways))
 
 	gateways := make([]batchv1alpha1.InferenceGatewaySpec, 0, len(models))
 	for _, model := range models {
