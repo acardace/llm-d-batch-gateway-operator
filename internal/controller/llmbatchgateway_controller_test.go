@@ -101,6 +101,79 @@ func TestValidateSpecRejectsBothAsyncTransports(t *testing.T) {
 	}
 }
 
+func TestValidateSpecRequiresAsyncTransport(t *testing.T) {
+	g := newTestAsyncGateway("test-async-no-transport")
+	g.Spec.Processor.AsyncConfig.Redis = nil
+	if err := validateSpec(g); err == nil || !strings.Contains(err.Error(), "redis or processor.asyncConfig.sql is required") {
+		t.Fatalf("validateSpec() error = %v, want missing transport error", err)
+	}
+
+	g.Spec.Processor.AsyncConfig.SQL = &batchv1alpha1.AsyncSQLSpec{}
+	if err := validateSpec(g); err != nil {
+		t.Fatalf("validateSpec() with SQL error = %v, want nil", err)
+	}
+
+	g.Spec.Processor.AsyncConfig.SQL = nil
+	g.Spec.Processor.AsyncConfig.Redis = &batchv1alpha1.AsyncRedisSpec{}
+	if err := validateSpec(g); err != nil {
+		t.Fatalf("validateSpec() with Redis error = %v, want nil", err)
+	}
+
+	g.Spec.Processor.DispatchMode = "sync"
+	g.Spec.Processor.GlobalInferenceGateway = &batchv1alpha1.InferenceGatewaySpec{URL: testInferenceGatewayURL}
+	g.Spec.Processor.ModelGateways = nil
+	g.Spec.Processor.AsyncConfig.Redis = nil
+	if err := validateSpec(g); err != nil {
+		t.Fatalf("validateSpec() in sync mode error = %v, want nil", err)
+	}
+}
+
+func TestAsyncTransportAdmission(t *testing.T) {
+	ctx := context.Background()
+	tests := []struct {
+		name         string
+		dispatchMode string
+		redis        bool
+		sql          bool
+		wantInvalid  bool
+	}{
+		{name: "async neither", dispatchMode: "async", wantInvalid: true},
+		{name: "default async neither", wantInvalid: true},
+		{name: "async Redis", dispatchMode: "async", redis: true},
+		{name: "async SQL", dispatchMode: "async", sql: true},
+		{name: "async both", dispatchMode: "async", redis: true, sql: true, wantInvalid: true},
+		{name: "sync neither", dispatchMode: "sync"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			gw := newTestAsyncGateway("test-transport-" + strings.ReplaceAll(strings.ToLower(tt.name), " ", "-"))
+			gw.Spec.Processor.DispatchMode = tt.dispatchMode
+			gw.Spec.Processor.AsyncConfig.Redis = nil
+			if tt.redis {
+				gw.Spec.Processor.AsyncConfig.Redis = &batchv1alpha1.AsyncRedisSpec{}
+			}
+			if tt.sql {
+				gw.Spec.Processor.AsyncConfig.SQL = &batchv1alpha1.AsyncSQLSpec{}
+			}
+			if tt.dispatchMode == "sync" {
+				gw.Spec.Processor.GlobalInferenceGateway = &batchv1alpha1.InferenceGatewaySpec{URL: testInferenceGatewayURL}
+				gw.Spec.Processor.ModelGateways = nil
+			}
+			err := k8sClient.Create(ctx, gw)
+			if tt.wantInvalid {
+				if !apierrors.IsInvalid(err) {
+					t.Fatalf("Create() error = %v, want Invalid", err)
+				}
+				return
+			}
+			if err != nil {
+				t.Fatalf("Create() error = %v, want nil", err)
+			}
+			t.Cleanup(func() { _ = k8sClient.Delete(ctx, gw) })
+		})
+	}
+}
+
 func TestValidateSpecAllowsSQLDistinctResultQueues(t *testing.T) {
 	g := minimalAsyncGateway()
 	g.Spec.Processor.AsyncConfig.Redis = nil

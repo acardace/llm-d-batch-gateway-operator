@@ -899,8 +899,7 @@ spec:
                       sql:
                         description: |-
                           SQL configures the PostgreSQL SQL message queue backend.
-                          Redis and SQL are mutually exclusive. Omitting both preserves the
-                          existing default behavior and lets the upstream chart choose its default.
+                          Redis and SQL are mutually exclusive; async dispatch requires one of them.
                         properties:
                           batchSize:
                             default: 10
@@ -1495,6 +1494,10 @@ spec:
                 - message: .spec.processor.asyncConfig is required when dispatchMode
                     is 'async'
                   rule: self.dispatchMode != 'async' || has(self.asyncConfig)
+                - message: asyncConfig.redis or asyncConfig.sql is required when dispatchMode
+                    is 'async'
+                  rule: self.dispatchMode != 'async' || (has(self.asyncConfig) &&
+                    (has(self.asyncConfig.redis) || has(self.asyncConfig.sql)))
               prometheusRule:
                 description: PrometheusRule configures a PrometheusRule resource with
                   pre-built alerting rules.

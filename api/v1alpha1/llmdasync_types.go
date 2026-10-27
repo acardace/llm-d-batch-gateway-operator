@@ -51,8 +51,7 @@ type AsyncProcessorSpec struct {
 	Redis *AsyncRedisSpec `json:"redis,omitempty"`
 
 	// SQL configures the PostgreSQL SQL message queue backend.
-	// Redis and SQL are mutually exclusive. Omitting both preserves the
-	// existing default behavior and lets the upstream chart choose its default.
+	// Redis and SQL are mutually exclusive; async dispatch requires one of them.
 	SQL *AsyncSQLSpec `json:"sql,omitempty"`
 
 	// WorkerPools defines named worker pool configurations.
