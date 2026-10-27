@@ -155,6 +155,8 @@ Choose exactly one async queue backend and configure it with the inference gatew
 
 ```yaml
 asyncConfig:
+  inferenceGateway:
+    url: http://inference-gateway.default.svc:8000
   redis:               # Redis/Valkey sorted-set, existing default
     queuesConfig:
       - name: llm-d-async:requests:llama-pool
@@ -164,6 +166,8 @@ or:
 
 ```yaml
 asyncConfig:
+  inferenceGateway:
+    url: http://inference-gateway.default.svc:8000
   sql:                 # PostgreSQL SQL transport
     maxConnections: 8  # per processor replica; omit for the chart default
     queuesConfig:
