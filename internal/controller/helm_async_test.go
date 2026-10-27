@@ -565,7 +565,7 @@ func TestSpecToAsyncHelmValues_SQLDefaultQueuesDeduplicated(t *testing.T) {
 	g.Spec.Processor.GlobalInferenceGateway = nil
 	g.Spec.Processor.ModelGateways = map[string]batchv1alpha1.InferenceGatewaySpec{
 		"model-a": {InferencePoolName: "pool-a", RequestQueueName: "request-shared", ResultQueueName: "result-a"},
-		"model-b": {InferencePoolName: "pool-a", RequestQueueName: "request-shared", ResultQueueName: "result-b"},
+		"model-b": {InferencePoolName: "pool-b", RequestQueueName: "request-shared", ResultQueueName: "result-b"},
 	}
 	g.Spec.Processor.AsyncConfig.Redis = nil
 	g.Spec.Processor.AsyncConfig.SQL = &batchv1alpha1.AsyncSQLSpec{}

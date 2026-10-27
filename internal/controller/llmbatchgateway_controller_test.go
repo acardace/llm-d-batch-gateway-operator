@@ -178,12 +178,28 @@ func TestValidateSpecRejectsSQLSharedResultQueue(t *testing.T) {
 	g.Spec.Processor.AsyncConfig.ResultPollTimeout = testDuration30s
 	g.Spec.Processor.GlobalInferenceGateway = nil
 	g.Spec.Processor.ModelGateways = map[string]batchv1alpha1.InferenceGatewaySpec{
-		"model-a": {InferencePoolName: "pool-a"},
-		"model-b": {InferencePoolName: "pool-a"},
+		"model-a": {InferencePoolName: "pool-a", ResultQueueName: "result-shared", RequestQueueName: "request-a"},
+		"model-b": {InferencePoolName: "pool-b", ResultQueueName: "result-shared", RequestQueueName: "request-b"},
 	}
 
 	if err := validateSpec(g); err == nil || !strings.Contains(err.Error(), "same SQL result queue") {
 		t.Fatalf("validateSpec() error = %v, want shared SQL result queue error", err)
+	}
+}
+
+func TestValidateSpecRejectsSQLSharedInferencePool(t *testing.T) {
+	g := minimalAsyncGateway()
+	g.Spec.Processor.AsyncConfig.Redis = nil
+	g.Spec.Processor.AsyncConfig.SQL = &batchv1alpha1.AsyncSQLSpec{}
+	g.Spec.Processor.AsyncConfig.ResultPollTimeout = testDuration30s
+	g.Spec.Processor.GlobalInferenceGateway = nil
+	g.Spec.Processor.ModelGateways = map[string]batchv1alpha1.InferenceGatewaySpec{
+		"model-a": {InferencePoolName: "shared-pool", RequestQueueName: "request-a", ResultQueueName: "result-a"},
+		"model-b": {InferencePoolName: "shared-pool", RequestQueueName: "request-b", ResultQueueName: "result-b"},
+	}
+
+	if err := validateSpec(g); err == nil || !strings.Contains(err.Error(), "same SQL inference pool") {
+		t.Fatalf("validateSpec() error = %v, want shared SQL inference pool error", err)
 	}
 }
 

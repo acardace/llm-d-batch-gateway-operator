@@ -722,6 +722,15 @@ func validateSpec(gw *batchv1alpha1.LLMBatchGateway) error {
 		// model, and SQL result reads are destructive. Models sharing a result
 		// queue would consume and drop each other's results.
 		models := slices.Sorted(maps.Keys(gw.Spec.Processor.ModelGateways))
+		poolModels := make(map[string]string, len(models))
+		for _, model := range models {
+			gateway := gw.Spec.Processor.ModelGateways[model]
+			if other, ok := poolModels[gateway.InferencePoolName]; ok {
+				return fmt.Errorf("processor.modelGateways[%s] and processor.modelGateways[%s] use the same SQL inference pool %q; each model must use a distinct inferencePoolName", other, model, gateway.InferencePoolName)
+			}
+			poolModels[gateway.InferencePoolName] = model
+		}
+
 		resultQueues := make(map[string]string, len(models))
 		for _, model := range models {
 			gateway := gw.Spec.Processor.ModelGateways[model]

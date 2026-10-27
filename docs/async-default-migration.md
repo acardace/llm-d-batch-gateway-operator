@@ -185,19 +185,20 @@ matching queue names. Do not configure both `redis` and `sql`.
 
 With the SQL transport, each model gateway must resolve to its own result queue
 (default `llm-d-async:results:<inferencePoolName>`), because the processor polls
-one result queue per model and SQL result reads are destructive. For models that
-share an `inferencePoolName`, set both queue names: `requestQueueName` may be
-shared, but each `resultQueueName` must be distinct. Setting only one queue name
-is rejected. For example:
+one result queue per model and SQL result reads are destructive. Each model must
+also use a distinct `inferencePoolName`; the processor requires one consumer per
+pool. `requestQueueName` may be shared, but every model needs a distinct
+`resultQueueName`. Set both queue names or neither (the operator derives defaults);
+setting only one is rejected. For example:
 
 ```yaml
 modelGateways:
   model-a:
-    inferencePoolName: shared-pool
+    inferencePoolName: pool-a
     requestQueueName: requests-shared
     resultQueueName: results-model-a
   model-b:
-    inferencePoolName: shared-pool
+    inferencePoolName: pool-b
     requestQueueName: requests-shared
     resultQueueName: results-model-b
 ```
