@@ -267,8 +267,10 @@ func TestValidateSpecSQLPrometheusGateRequiresURL(t *testing.T) {
 	}{
 		{name: "queue budget without URL", queueGate: "prometheus-budget", wantError: true},
 		{name: "queue saturation without URL", queueGate: "prometheus-saturation", wantError: true},
+		{name: "queue query without URL", queueGate: "prometheus-query", wantError: true},
 		{name: "worker budget without URL", workerGate: "prometheus-budget", wantError: true},
 		{name: "worker saturation without URL", workerGate: "prometheus-saturation", wantError: true},
+		{name: "worker query without URL", workerGate: "prometheus-query", wantError: true},
 		{name: "queue gate with URL", queueGate: "prometheus-budget", url: "http://prometheus:9090"},
 		{name: "worker gate with URL", workerGate: "prometheus-saturation", url: "http://prometheus:9090"},
 		{name: "other gate without URL", queueGate: "none"},

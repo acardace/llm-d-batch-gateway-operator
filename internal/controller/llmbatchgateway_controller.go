@@ -45,6 +45,7 @@ const (
 	dispatchModeAsync        = "async"
 	dbBackendPostgreSQL      = "postgresql"
 	gatePrometheusBudget     = "prometheus-budget"
+	gatePrometheusQuery      = "prometheus-query"
 	gatePrometheusSaturation = "prometheus-saturation"
 
 	labelKeyComponent       = "app.kubernetes.io/component"
@@ -790,7 +791,7 @@ func hasQueueNames(gateway batchv1alpha1.InferenceGatewaySpec) bool {
 }
 
 func isPrometheusGate(gateType string) bool {
-	return gateType == gatePrometheusBudget || gateType == gatePrometheusSaturation
+	return gateType == gatePrometheusBudget || gateType == gatePrometheusQuery || gateType == gatePrometheusSaturation
 }
 
 func conditionMessage(ok bool, trueMsg, falseMsg string) string {
