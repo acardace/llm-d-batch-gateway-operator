@@ -192,6 +192,10 @@ pool. `requestQueueName` may be shared, but every model needs a distinct
 setting only one is rejected. For example:
 
 ```yaml
+asyncConfig:
+  sql:
+    queuesConfig:
+      - name: requests-shared
 modelGateways:
   model-a:
     inferencePoolName: pool-a
