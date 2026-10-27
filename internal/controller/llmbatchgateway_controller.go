@@ -735,6 +735,9 @@ func validateSpec(gw *batchv1alpha1.LLMBatchGateway) error {
 		if len(gw.Spec.Processor.AsyncConfig.SQL.QueuesConfig) > 0 {
 			configured := make(map[string]struct{}, len(gw.Spec.Processor.AsyncConfig.SQL.QueuesConfig))
 			for _, queue := range gw.Spec.Processor.AsyncConfig.SQL.QueuesConfig {
+				if _, exists := configured[queue.Name]; exists {
+					return fmt.Errorf("processor.asyncConfig.sql.queuesConfig contains duplicate queue %q", queue.Name)
+				}
 				configured[queue.Name] = struct{}{}
 			}
 			for model, gateway := range gw.Spec.Processor.ModelGateways {
@@ -754,6 +757,18 @@ func validateSpec(gw *batchv1alpha1.LLMBatchGateway) error {
 			for _, queue := range queues {
 				if queue.IGWBaseURL == "" {
 					return fmt.Errorf("processor.asyncConfig.inferenceGateway.url is required when SQL queue %q does not set igwBaseURL", queue.Name)
+				}
+			}
+		}
+		if gw.Spec.Processor.AsyncConfig.PrometheusURL == "" {
+			for _, queue := range gw.Spec.Processor.AsyncConfig.SQL.QueuesConfig {
+				if queue.GateType == "prometheus-budget" || queue.GateType == "prometheus-saturation" {
+					return fmt.Errorf("processor.asyncConfig.prometheusURL is required for SQL queue %q with gate %q", queue.Name, queue.GateType)
+				}
+			}
+			for _, pool := range gw.Spec.Processor.AsyncConfig.WorkerPools {
+				if pool.GateType == "prometheus-budget" || pool.GateType == "prometheus-saturation" {
+					return fmt.Errorf("processor.asyncConfig.prometheusURL is required for worker pool %q with gate %q", pool.Name, pool.GateType)
 				}
 			}
 		}

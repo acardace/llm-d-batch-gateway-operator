@@ -162,6 +162,90 @@ func TestValidateSpecAllowsSQLRequestQueueCoverage(t *testing.T) {
 	}
 }
 
+func TestValidateSpecRejectsSQLDuplicateQueueNames(t *testing.T) {
+	g := minimalAsyncGateway()
+	g.Spec.Processor.AsyncConfig.Redis = nil
+	g.Spec.Processor.AsyncConfig.SQL = &batchv1alpha1.AsyncSQLSpec{
+		QueuesConfig: []batchv1alpha1.AsyncQueueConfig{
+			{Name: "request-a", IGWBaseURL: testInferenceGatewayURL},
+			{Name: "request-a", IGWBaseURL: testInferenceGatewayURL},
+		},
+	}
+	g.Spec.Processor.AsyncConfig.ResultPollTimeout = testDuration30s
+	g.Spec.Processor.GlobalInferenceGateway = nil
+	g.Spec.Processor.ModelGateways = map[string]batchv1alpha1.InferenceGatewaySpec{
+		"model-a": {
+			InferencePoolName: "pool-a",
+			RequestQueueName:  "request-a",
+			ResultQueueName:   "result-a",
+		},
+	}
+
+	err := validateSpec(g)
+	if err == nil || !strings.Contains(err.Error(), `duplicate queue "request-a"`) {
+		t.Fatalf("validateSpec() error = %v, want duplicate SQL queue error", err)
+	}
+}
+
+func TestValidateSpecSQLPrometheusGateRequiresURL(t *testing.T) {
+	tests := []struct {
+		name       string
+		queueGate  string
+		workerGate string
+		url        string
+		wantError  bool
+	}{
+		{name: "queue budget without URL", queueGate: "prometheus-budget", wantError: true},
+		{name: "queue saturation without URL", queueGate: "prometheus-saturation", wantError: true},
+		{name: "worker budget without URL", workerGate: "prometheus-budget", wantError: true},
+		{name: "worker saturation without URL", workerGate: "prometheus-saturation", wantError: true},
+		{name: "queue gate with URL", queueGate: "prometheus-budget", url: "http://prometheus:9090"},
+		{name: "worker gate with URL", workerGate: "prometheus-saturation", url: "http://prometheus:9090"},
+		{name: "other gate without URL", queueGate: "none"},
+		{name: "no gate without URL"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			g := minimalAsyncGateway()
+			g.Spec.Processor.AsyncConfig.Redis = nil
+			g.Spec.Processor.AsyncConfig.SQL = &batchv1alpha1.AsyncSQLSpec{
+				QueuesConfig: []batchv1alpha1.AsyncQueueConfig{{Name: asyncRequestQueueName("pool-a"), GateType: tt.queueGate}},
+			}
+			g.Spec.Processor.AsyncConfig.WorkerPools = []batchv1alpha1.AsyncWorkerPool{{Name: "default", Workers: 1, GateType: tt.workerGate}}
+			g.Spec.Processor.AsyncConfig.PrometheusURL = tt.url
+			g.Spec.Processor.AsyncConfig.ResultPollTimeout = testDuration30s
+			g.Spec.Processor.GlobalInferenceGateway = nil
+			g.Spec.Processor.ModelGateways = map[string]batchv1alpha1.InferenceGatewaySpec{
+				"model-a": {InferencePoolName: "pool-a"},
+			}
+
+			err := validateSpec(g)
+			if tt.wantError {
+				if err == nil || !strings.Contains(err.Error(), "prometheusURL") {
+					t.Fatalf("validateSpec() error = %v, want missing prometheusURL error", err)
+				}
+			} else if err != nil {
+				t.Fatalf("validateSpec() error = %v, want nil", err)
+			}
+		})
+	}
+}
+
+func TestValidateSpecDoesNotValidateRedisPrometheusGate(t *testing.T) {
+	g := minimalAsyncGateway()
+	g.Spec.Processor.AsyncConfig.ResultPollTimeout = testDuration30s
+	g.Spec.Processor.AsyncConfig.WorkerPools = []batchv1alpha1.AsyncWorkerPool{{Name: "default", Workers: 1, GateType: "prometheus-budget"}}
+	g.Spec.Processor.AsyncConfig.Redis.GateType = "prometheus-saturation"
+	g.Spec.Processor.GlobalInferenceGateway = nil
+	g.Spec.Processor.ModelGateways = map[string]batchv1alpha1.InferenceGatewaySpec{
+		"model-a": {InferencePoolName: "pool-a"},
+	}
+
+	if err := validateSpec(g); err != nil {
+		t.Fatalf("validateSpec() error = %v, want unchanged Redis validation", err)
+	}
+}
+
 func TestValidateSpecAllowsSQLDefaultRequestQueueCoverage(t *testing.T) {
 	g := minimalAsyncGateway()
 	g.Spec.Processor.AsyncConfig.Redis = nil
