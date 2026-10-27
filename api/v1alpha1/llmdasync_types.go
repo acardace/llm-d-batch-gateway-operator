@@ -125,10 +125,9 @@ type AsyncSQLSpec struct {
 	// MaxConnections caps the SQL connection pool for each Batch Gateway
 	// processor replica (async_dispatch.max_connections). It is separate from
 	// the async processor dispatcher's own SQL pool.
-	// When omitted, the chart default (8) applies. An explicit 0 is rendered
-	// as 0 and rejected by the processor's configuration validation.
+	// When omitted, the chart default (8) applies. Explicit values must be positive.
 	// +optional
-	// +kubebuilder:validation:Minimum=0
+	// +kubebuilder:validation:Minimum=1
 	MaxConnections *int32 `json:"maxConnections,omitempty"`
 
 	// ResultBatchSize is the maximum number of results written per transaction.

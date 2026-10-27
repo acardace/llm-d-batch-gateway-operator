@@ -177,8 +177,8 @@ asyncConfig:
 `maxConnections` caps the Batch Gateway processor's SQL pool per replica. It is
 separate from the llm-d-async dispatcher's own pool
 (`ap.transportConfig.max_connections`, default 32). Budget both against
-PostgreSQL's `max_connections`. An explicit `0` is preserved and rejected by the
-processor validation rather than silently treated as the default.
+PostgreSQL's `max_connections`. Explicit values must be positive; omit the field
+to use the default of 8.
 
 The Batch Gateway and llm-d-async dispatcher must use the same transport and
 matching queue names. Do not configure both `redis` and `sql`.

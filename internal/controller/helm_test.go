@@ -457,13 +457,13 @@ func TestRenderBatchChart_ResumableDefaults(t *testing.T) {
 	t.Fatal("processor ConfigMap not rendered")
 }
 
-func TestRenderBatchChart_AsyncDispatchSQLMaxConnectionsZero(t *testing.T) {
+func TestRenderBatchChart_AsyncDispatchSQLMaxConnections(t *testing.T) {
 	renderer, err := NewHelmRenderer("../../batch-gateway/charts/batch-gateway", testImages(), tlspkg.ProfileValues{})
 	if err != nil {
 		t.Fatalf("NewHelmRenderer() error: %v", err)
 	}
 
-	zero := int32(0)
+	maxConnections := int32(1)
 	gw := minimalGateway()
 	gw.Spec.Processor.DispatchMode = dispatchModeAsync
 	gw.Spec.Processor.GlobalInferenceGateway = nil
@@ -476,7 +476,7 @@ func TestRenderBatchChart_AsyncDispatchSQLMaxConnectionsZero(t *testing.T) {
 	}
 	gw.Spec.Processor.AsyncConfig = &batchv1alpha1.AsyncProcessorSpec{
 		ResultPollTimeout: "45s",
-		SQL:               &batchv1alpha1.AsyncSQLSpec{MaxConnections: &zero},
+		SQL:               &batchv1alpha1.AsyncSQLSpec{MaxConnections: &maxConnections},
 	}
 
 	objects, err := renderer.RenderBatchChart(gw, testSecretName(gw))
@@ -498,8 +498,8 @@ func TestRenderBatchChart_AsyncDispatchSQLMaxConnectionsZero(t *testing.T) {
 		if !strings.Contains(data, `transport: "sql"`) {
 			t.Fatalf("processor ConfigMap transport = %q, want sql", data)
 		}
-		if !strings.Contains(data, "max_connections: 0") {
-			t.Fatalf("processor ConfigMap max_connections = %q, want 0 preserved", data)
+		if !strings.Contains(data, "max_connections: 1") {
+			t.Fatalf("processor ConfigMap max_connections = %q, want 1", data)
 		}
 		return
 	}
@@ -1475,7 +1475,7 @@ func TestSpecToHelmValues_AsyncDispatchModels(t *testing.T) {
 }
 
 func TestSpecToHelmValues_AsyncDispatchSQLMaxConnections(t *testing.T) {
-	zero := int32(0)
+	one := int32(1)
 	eight := int32(8)
 
 	tests := []struct {
@@ -1485,7 +1485,7 @@ func TestSpecToHelmValues_AsyncDispatchSQLMaxConnections(t *testing.T) {
 		wantValue bool
 	}{
 		{name: "unset uses chart default", maxConns: nil},
-		{name: "explicit zero is preserved", maxConns: &zero, want: int64(0), wantValue: true},
+		{name: "explicit one", maxConns: &one, want: int64(1), wantValue: true},
 		{name: "explicit eight", maxConns: &eight, want: int64(8), wantValue: true},
 	}
 
