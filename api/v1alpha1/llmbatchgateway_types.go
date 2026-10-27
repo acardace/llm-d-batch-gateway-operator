@@ -309,6 +309,7 @@ type LoggingConfig struct {
 
 // ProcessorSpec configures the request-processing worker component.
 // +kubebuilder:validation:XValidation:rule="self.dispatchMode != 'async' || has(self.asyncConfig)",message=".spec.processor.asyncConfig is required when dispatchMode is 'async'"
+// +kubebuilder:validation:XValidation:rule="self.dispatchMode != 'async' || (has(self.asyncConfig) && (has(self.asyncConfig.redis) || has(self.asyncConfig.sql)))",message="asyncConfig.redis or asyncConfig.sql is required when dispatchMode is 'async'"
 type ProcessorSpec struct {
 	// Replicas is the desired number of processor pods.
 	// Setting this to 0 suspends the processor; the Ready condition will be False.

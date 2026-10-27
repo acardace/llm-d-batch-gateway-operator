@@ -1,6 +1,7 @@
 package controller
 
 import (
+	"slices"
 	"testing"
 
 	batchv1alpha1 "github.com/opendatahub-io/llm-d-batch-gateway-operator/api/v1alpha1"
@@ -63,7 +64,7 @@ func TestSpecToAsyncHelmValues(t *testing.T) {
 	})
 
 	t.Run("redis", func(t *testing.T) {
-		if got := ap["transport"]; got != "redis-sortedset" {
+		if got := ap["transport"]; got != asyncTransportRedis {
 			t.Errorf("transport = %v, want redis-sortedset", got)
 		}
 		transportConfig, ok := ap["transportConfig"].(map[string]any)
@@ -124,7 +125,7 @@ func TestSpecToAsyncHelmValues_TransportQueues(t *testing.T) {
 	gw.Spec.Processor.AsyncConfig.Redis.BatchSize = &batchSize
 	gw.Spec.Processor.AsyncConfig.Redis.QueuesConfig = []batchv1alpha1.AsyncQueueConfig{
 		{
-			Name:           "llm-d-async:requests:pool-a",
+			Name:           asyncRequestQueueName("pool-a"),
 			WorkerPoolID:   "pool-a-workers",
 			IGWBaseURL:     "http://epp-pool-a:8081",
 			RequestPathURL: "/v1/completions",
@@ -132,7 +133,7 @@ func TestSpecToAsyncHelmValues_TransportQueues(t *testing.T) {
 			GateParams:     map[string]string{"pool": "pool-a"},
 		},
 		{
-			Name:         "llm-d-async:requests:pool-b",
+			Name:         asyncRequestQueueName("pool-b"),
 			WorkerPoolID: "pool-b-workers",
 		},
 	}
@@ -164,8 +165,8 @@ func TestSpecToAsyncHelmValues_TransportQueues(t *testing.T) {
 	if !ok {
 		t.Fatal("transportConfig.queues[0] is not a map")
 	}
-	if got := queue["queue_name"]; got != "llm-d-async:requests:pool-a" {
-		t.Errorf("queue_name = %v, want llm-d-async:requests:pool-a", got)
+	if got := queue["queue_name"]; got != asyncRequestQueueName("pool-a") {
+		t.Errorf("queue_name = %v, want %s", got, asyncRequestQueueName("pool-a"))
 	}
 	if got := queue["worker_pool_id"]; got != "pool-a-workers" {
 		t.Errorf("worker_pool_id = %v, want pool-a-workers", got)
@@ -189,6 +190,61 @@ func TestSpecToAsyncHelmValues_TransportQueues(t *testing.T) {
 	}
 	if got := inheritedQueue["igw_base_url"]; got != testInferenceGatewayURL {
 		t.Errorf("transportConfig.queues[1].igw_base_url = %v, want %s", got, testInferenceGatewayURL)
+	}
+}
+
+func TestSpecToAsyncHelmValues_SQLTransport(t *testing.T) {
+	g := minimalAsyncGateway()
+	g.Spec.Processor.GlobalInferenceGateway = nil
+	g.Spec.Processor.ModelGateways = map[string]batchv1alpha1.InferenceGatewaySpec{
+		"model-a": {InferencePoolName: "pool-a"},
+	}
+	g.Spec.Processor.AsyncConfig.Redis = nil
+	g.Spec.Processor.AsyncConfig.SQL = &batchv1alpha1.AsyncSQLSpec{
+		QueuesConfig: []batchv1alpha1.AsyncQueueConfig{{Name: "request-sql"}},
+	}
+
+	vals := specToAsyncHelmValues(g, testSecretName(g), testImages())
+	ap := vals["ap"].(map[string]any)
+	if got := ap["transport"]; got != asyncTransportSQL {
+		t.Fatalf("transport = %v, want sql", got)
+	}
+	transportConfig := ap["transportConfig"].(map[string]any)
+	urlSecret := transportConfig["urlSecret"].(map[string]any)
+	if got := urlSecret["key"]; got != "postgresql-url" {
+		t.Errorf("urlSecret.key = %v, want postgresql-url", got)
+	}
+	if got := transportConfig["result_queue_name"]; got != asyncResultQueueName("pool-a") {
+		t.Errorf("result_queue_name = %v, want %s", got, asyncResultQueueName("pool-a"))
+	}
+	if got := transportConfig["queues"].([]any)[0].(map[string]any)["queue_name"]; got != "request-sql" {
+		t.Errorf("queue_name = %v, want request-sql", got)
+	}
+	if _, ok := ap["env"]; ok {
+		t.Error("ap.env should not be set; the chart injects SQL_URL from transportConfig.urlSecret")
+	}
+}
+
+func TestSpecToAsyncHelmValues_SQLTransportExplicitResultQueue(t *testing.T) {
+	g := minimalAsyncGateway()
+	g.Spec.Processor.GlobalInferenceGateway = nil
+	g.Spec.Processor.ModelGateways = map[string]batchv1alpha1.InferenceGatewaySpec{
+		"model-a": {
+			InferencePoolName: "pool-a",
+			RequestQueueName:  "request-sql",
+			ResultQueueName:   "result-sql",
+		},
+	}
+	g.Spec.Processor.AsyncConfig.Redis = nil
+	g.Spec.Processor.AsyncConfig.SQL = &batchv1alpha1.AsyncSQLSpec{}
+
+	vals := specToAsyncHelmValues(g, testSecretName(g), testImages())
+	transportConfig := vals["ap"].(map[string]any)["transportConfig"].(map[string]any)
+	if got := transportConfig["result_queue_name"]; got != "result-sql" {
+		t.Errorf("result_queue_name = %v, want result-sql", got)
+	}
+	if got := transportConfig["queues"].([]any)[0].(map[string]any)["queue_name"]; got != "request-sql" {
+		t.Errorf("queue_name = %v, want request-sql", got)
 	}
 }
 
@@ -448,4 +504,80 @@ func TestRenderAsyncChart(t *testing.T) {
 			t.Error("no Deployment found in rendered objects")
 		}
 	})
+}
+
+func TestRenderAsyncChart_SQLTransport(t *testing.T) {
+	renderer, err := NewHelmRenderer("../../llm-d-async/charts/llm-d-async", testImages(), tlspkg.ProfileValues{})
+	if err != nil {
+		t.Fatalf("NewHelmRenderer() error: %v", err)
+	}
+
+	g := minimalAsyncGateway()
+	g.Spec.Processor.AsyncConfig.Redis = nil
+	g.Spec.Processor.AsyncConfig.SQL = &batchv1alpha1.AsyncSQLSpec{
+		QueuesConfig: []batchv1alpha1.AsyncQueueConfig{{Name: "request-sql"}},
+	}
+	objects, err := renderer.RenderAsyncChart(g, testSecretName(g))
+	if err != nil {
+		t.Fatalf("RenderAsyncChart() SQL error: %v", err)
+	}
+
+	for _, obj := range objects {
+		if obj.GetKind() != "Deployment" {
+			continue
+		}
+		containers, found, err := unstructured.NestedSlice(obj.Object, "spec", "template", "spec", "containers")
+		if err != nil || !found || len(containers) == 0 {
+			t.Fatalf("SQL deployment containers not found: %v", err)
+		}
+		container := containers[0].(map[string]any)
+		args, _, _ := unstructured.NestedStringSlice(container, "args")
+		if !slices.Contains(args, "--transport=sql") {
+			t.Fatalf("SQL deployment args = %v, want --transport=sql", args)
+		}
+		env, _, _ := unstructured.NestedSlice(container, "env")
+		if !hasEnvSecret(env, "SQL_URL", testSecretName(g), "postgresql-url") {
+			t.Fatalf("SQL_URL env is not wired to the PostgreSQL Secret: %v", env)
+		}
+		return
+	}
+	t.Fatal("SQL deployment not found")
+}
+
+func hasEnvSecret(env []any, name, secretName, secretKey string) bool {
+	for _, raw := range env {
+		entry := raw.(map[string]any)
+		if entry["name"] != name {
+			continue
+		}
+		valueFrom, ok := entry["valueFrom"].(map[string]any)
+		if !ok {
+			return false
+		}
+		secretRef, ok := valueFrom["secretKeyRef"].(map[string]any)
+		return ok && secretRef["name"] == secretName && secretRef["key"] == secretKey
+	}
+	return false
+}
+
+func TestSpecToAsyncHelmValues_SQLDefaultQueuesDeduplicated(t *testing.T) {
+	g := minimalAsyncGateway()
+	g.Spec.Processor.GlobalInferenceGateway = nil
+	g.Spec.Processor.ModelGateways = map[string]batchv1alpha1.InferenceGatewaySpec{
+		"model-a": {InferencePoolName: "pool-a", RequestQueueName: "request-shared", ResultQueueName: "result-a"},
+		"model-b": {InferencePoolName: "pool-b", RequestQueueName: "request-shared", ResultQueueName: "result-b"},
+	}
+	g.Spec.Processor.AsyncConfig.Redis = nil
+	g.Spec.Processor.AsyncConfig.SQL = &batchv1alpha1.AsyncSQLSpec{}
+	g.Spec.Processor.AsyncConfig.ResultPollTimeout = testDuration30s
+
+	if err := validateSpec(g); err != nil {
+		t.Fatalf("validateSpec() error = %v, want nil", err)
+	}
+	vals := specToAsyncHelmValues(g, testSecretName(g), testImages())
+	ap := vals["ap"].(map[string]any)
+	queues := ap["transportConfig"].(map[string]any)["queues"].([]any)
+	if len(queues) != 1 {
+		t.Fatalf("len(queues) = %d, want 1 (deduplicated)", len(queues))
+	}
 }

@@ -7,9 +7,10 @@ import (
 // --- Async Processor ---
 
 // AsyncProcessorSpec configures the optional async-processor component that dispatches
-// batch inference requests via a Redis message queue to inference gateways.
+// batch inference requests via a transport-backed queue to inference gateways.
 // When set on LLMBatchGatewaySpec, the controller deploys an additional
 // async-processor Deployment alongside the core components.
+// +kubebuilder:validation:XValidation:rule="!(has(self.redis) && has(self.sql))",message="asyncConfig.redis and asyncConfig.sql are mutually exclusive"
 type AsyncProcessorSpec struct {
 	// Replicas is reserved for the future desired number of async-processor pods.
 	// It is currently ignored: the upstream llm-d-async chart hardcodes replicas to 1.
@@ -48,6 +49,10 @@ type AsyncProcessorSpec struct {
 
 	// Redis configures the Redis message queue backend.
 	Redis *AsyncRedisSpec `json:"redis,omitempty"`
+
+	// SQL configures the PostgreSQL SQL message queue backend.
+	// Redis and SQL are mutually exclusive; async dispatch requires one of them.
+	SQL *AsyncSQLSpec `json:"sql,omitempty"`
 
 	// WorkerPools defines named worker pool configurations.
 	// +optional
@@ -103,12 +108,48 @@ type AsyncRedisSpec struct {
 	QueuesConfig []AsyncQueueConfig `json:"queuesConfig,omitempty"`
 }
 
-// AsyncQueueConfig configures a single Redis queue for the async-processor.
+// AsyncSQLSpec configures the PostgreSQL SQL transport for the async-processor.
+// The PostgreSQL URL is read from the operator-managed Secret's
+// postgresql-url key; credentials are never stored in the custom resource.
+type AsyncSQLSpec struct {
+	// PollIntervalMs is the interval in milliseconds for polling SQL queues.
+	// +kubebuilder:default=1000
+	// +kubebuilder:validation:Minimum=1
+	PollIntervalMs *int32 `json:"pollIntervalMs,omitempty"`
+
+	// BatchSize is the number of requests to dispatch per poll cycle.
+	// +kubebuilder:default=10
+	// +kubebuilder:validation:Minimum=1
+	BatchSize *int32 `json:"batchSize,omitempty"`
+
+	// MaxConnections caps the SQL connection pool for each Batch Gateway
+	// processor replica (async_dispatch.max_connections). It is separate from
+	// the async processor dispatcher's own SQL pool.
+	// When omitted, the chart default (8) applies. Explicit values must be positive.
+	// +optional
+	// +kubebuilder:validation:Minimum=1
+	MaxConnections *int32 `json:"maxConnections,omitempty"`
+
+	// ResultBatchSize is the maximum number of results written per transaction.
+	// +kubebuilder:validation:Minimum=1
+	ResultBatchSize *int32 `json:"resultBatchSize,omitempty"`
+
+	// LeaseTTLSeconds controls SQL partition lease expiry after a processor stops heartbeating.
+	// +kubebuilder:validation:Minimum=1
+	LeaseTTLSeconds *int32 `json:"leaseTTLSeconds,omitempty"`
+
+	// HandoffTimeoutSeconds bounds graceful partition handoff during processor shutdown.
+	// +kubebuilder:validation:Minimum=1
+	HandoffTimeoutSeconds *int32 `json:"handoffTimeoutSeconds,omitempty"`
+
+	// QueuesConfig configures SQL request queues and their dispatch gates.
+	// +optional
+	QueuesConfig []AsyncQueueConfig `json:"queuesConfig,omitempty"`
+}
+
+// AsyncQueueConfig configures a single async-processor request queue.
 type AsyncQueueConfig struct {
-	// Name is the Redis sorted-set key for this queue.
-	// Must follow the convention: llm-d-async:requests:<inferencePoolName>
-	// where <inferencePoolName> matches the corresponding modelGateways entry.
-	// The result queue (llm-d-async:results:<inferencePoolName>) is auto-configured by the batch processor.
+	// Name is the transport-specific request queue name.
 	// +kubebuilder:validation:Required
 	// +kubebuilder:validation:MaxLength=253
 	Name string `json:"name"`

@@ -12,10 +12,10 @@ This release changes only the Batch Gateway core storage backend:
 
 ```text
 Batch metadata and job state: Redis/Valkey -> PostgreSQL
-Async request/result queues:  Redis remains required for async dispatch
+Async request/result queues:  Redis/Valkey sorted-set (default) or PostgreSQL SQL
 ```
 
-These are separate uses of Redis. PostgreSQL stores Batch Gateway metadata and job state. Redis under `processor.asyncConfig` is still used by the async processor for request/result queues and dispatch gates.
+These are separate concerns. PostgreSQL stores Batch Gateway metadata and job state. Async request/result queues are selected under `processor.asyncConfig`: use `redis` for the Redis/Valkey sorted-set transport or `sql` for the PostgreSQL transport. The selected transport must be configured consistently in both Batch Gateway and llm-d-async.
 
 Existing resources with `dbBackend: redis`, `dbBackend: valkey`, or the old top-level `spec.redis` field fail reconciliation after the operator upgrade. The CRD now accepts only `dbBackend: postgresql`.
 
@@ -25,13 +25,13 @@ The operator does not migrate Redis/Valkey data to PostgreSQL automatically. For
 2. Migrate any required Batch Gateway metadata and job state using your approved database migration process.
 3. Update the referenced Secret with a `postgresql-url` entry.
 4. Set `spec.dbBackend: postgresql` and remove the old top-level `spec.redis` field.
-5. Keep `redis-url` and deploy Redis only when the resource uses async dispatch.
+5. Keep `redis-url` and deploy Redis only when the resource uses the Redis async transport. The SQL async transport uses the existing `postgresql-url` Secret entry.
 
 Do not treat this as only a CR field change. Starting PostgreSQL without migrating required data creates an empty Batch Gateway database and can lose access to existing Batches.
 
 If a resource already uses `dbBackend: postgresql`, no core storage migration is needed; remove any unused top-level `spec.redis` field before upgrading. Do not move that field into `processor.asyncConfig`; async Redis connection and queue settings are configured separately.
 
-If Redis is used only by `processor.asyncConfig`, keep it. That async Redis setup does not need to move to PostgreSQL.
+If Redis is used only by `processor.asyncConfig.redis`, keep it when retaining the Redis async transport. It does not need to move to PostgreSQL. To migrate async queues to SQL, drain the Redis-backed requests/results first, then configure `processor.asyncConfig.sql` and the llm-d-async SQL transport together.
 
 ## Resumable Pipeline Upgrade
 
@@ -52,7 +52,7 @@ Explicit dispatchMode: async -> async
 
 ## Why Migration Is Required
 
-Synchronous configurations commonly use `globalInferenceGateway` or synchronous model gateway URLs. Async configurations require model-to-InferencePool mappings, Redis-backed queues, and an `asyncConfig` section.
+Synchronous configurations commonly use `globalInferenceGateway` or synchronous model gateway URLs. Async configurations require model-to-InferencePool mappings, a transport-specific queue configuration, and an `asyncConfig` section.
 
 Do not allow an existing sync resource to acquire the async default accidentally during an upgrade.
 
@@ -125,7 +125,14 @@ spec:
         inferencePoolName: llama-pool
     asyncConfig:
       resultPollTimeout: 30s
+      inferenceGateway:
+        url: http://inference-gateway.default.svc:8000
+      redis:
+        queuesConfig:
+          - name: llm-d-async:requests:llama-pool
 ```
+
+An empty `redis: {}` is not enough: with no `queuesConfig` the dispatcher consumes a single queue named `request-sortedset`, not the `llm-d-async:requests:<inferencePoolName>` queue the processor submits to, and it needs `inferenceGateway` (or a per-queue `igwBaseURL`) to start. List one queue per `inferencePoolName`.
 
 The operator validates that async resources contain `asyncConfig`, model mappings, and an `inferencePoolName` for each model.
 
@@ -144,7 +151,61 @@ spec:
       resultPollTimeout: 30s
 ```
 
-Also configure the async processor's Redis connection, inference gateway, queue gates, and any required Prometheus metrics.
+Choose exactly one async queue backend and configure it with the inference gateway, queue gates, and any required Prometheus metrics:
+
+```yaml
+asyncConfig:
+  inferenceGateway:
+    url: http://inference-gateway.default.svc:8000
+  redis:               # Redis/Valkey sorted-set, existing default
+    queuesConfig:
+      - name: llm-d-async:requests:llama-pool
+```
+
+or:
+
+```yaml
+asyncConfig:
+  inferenceGateway:
+    url: http://inference-gateway.default.svc:8000
+  sql:                 # PostgreSQL SQL transport
+    maxConnections: 8  # per processor replica; omit for the chart default
+    queuesConfig:
+      - name: llm-d-async:requests:llama-pool
+```
+
+`maxConnections` caps the Batch Gateway processor's SQL pool per replica. It is
+separate from the llm-d-async dispatcher's own pool
+(`ap.transportConfig.max_connections`, default 32). Budget both against
+PostgreSQL's `max_connections`. Explicit values must be positive; omit the field
+to use the default of 8.
+
+The Batch Gateway and llm-d-async dispatcher must use the same transport and
+matching queue names. Do not configure both `redis` and `sql`.
+
+With the SQL transport, each model gateway must resolve to its own result queue
+(default `llm-d-async:results:<inferencePoolName>`), because the processor polls
+one result queue per model and SQL result reads are destructive. Each model must
+also use a distinct `inferencePoolName`; the processor requires one consumer per
+pool. `requestQueueName` may be shared, but every model needs a distinct
+`resultQueueName`. Set both queue names or neither (the operator derives defaults);
+setting only one is rejected. For example:
+
+```yaml
+asyncConfig:
+  sql:
+    queuesConfig:
+      - name: requests-shared
+modelGateways:
+  model-a:
+    inferencePoolName: pool-a
+    requestQueueName: requests-shared
+    resultQueueName: results-model-a
+  model-b:
+    inferencePoolName: pool-b
+    requestQueueName: requests-shared
+    resultQueueName: results-model-b
+```
 
 Do not keep `globalInferenceGateway` when using async dispatch.
 
@@ -172,6 +233,6 @@ Restore the complete synchronous gateway configuration before removing async-spe
 - Existing processor ConfigMaps contain `dispatch_mode: "sync"`.
 - New resources default to async.
 - New async resources create an async processor.
-- Async requests and results flow through Redis.
+- Async requests and results flow through the selected Redis/Valkey or PostgreSQL SQL transport.
 - Explicit sync remains supported.
 - Async cancellation and deadline handling continue to work.
