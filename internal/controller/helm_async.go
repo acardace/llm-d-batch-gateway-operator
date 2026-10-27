@@ -292,9 +292,9 @@ func sortedModelGateways(gw *batchv1alpha1.LLMBatchGateway) []batchv1alpha1.Infe
 // sqlResultQueueName returns the default result queue used by the SQL dispatcher.
 // The dispatcher applies it only when a request does not carry its own result
 // routing. The Batch Gateway processor stamps every request with
-// <base>:<consumerID>, which the dispatcher honors per request. The operator
-// still derives one base queue and requires model gateways to agree on it so the
-// dispatcher's fallback is unambiguous.
+// <base>:<consumerID>, which the dispatcher honors per request, so each model
+// keeps its own result queue. The first model's queue (by sorted name) is used
+// only as the fallback.
 func sqlResultQueueName(gw *batchv1alpha1.LLMBatchGateway) string {
 	gateways := sortedModelGateways(gw)
 	if len(gateways) == 0 {
@@ -317,8 +317,14 @@ func sqlRequestQueueName(gateway batchv1alpha1.InferenceGatewaySpec) string {
 func sqlQueueDefaults(gw *batchv1alpha1.LLMBatchGateway) []batchv1alpha1.AsyncQueueConfig {
 	gateways := sortedModelGateways(gw)
 	queues := make([]batchv1alpha1.AsyncQueueConfig, 0, len(gateways))
+	seen := make(map[string]struct{}, len(gateways))
 	for _, gateway := range gateways {
-		queues = append(queues, batchv1alpha1.AsyncQueueConfig{Name: sqlRequestQueueName(gateway)})
+		name := sqlRequestQueueName(gateway)
+		if _, ok := seen[name]; ok {
+			continue
+		}
+		seen[name] = struct{}{}
+		queues = append(queues, batchv1alpha1.AsyncQueueConfig{Name: name})
 	}
 	return queues
 }

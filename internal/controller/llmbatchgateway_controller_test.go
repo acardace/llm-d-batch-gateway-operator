@@ -101,7 +101,7 @@ func TestValidateSpecRejectsBothAsyncTransports(t *testing.T) {
 	}
 }
 
-func TestValidateSpecRejectsSQLMultipleResultQueues(t *testing.T) {
+func TestValidateSpecAllowsSQLDistinctResultQueues(t *testing.T) {
 	g := minimalAsyncGateway()
 	g.Spec.Processor.AsyncConfig.Redis = nil
 	g.Spec.Processor.AsyncConfig.SQL = &batchv1alpha1.AsyncSQLSpec{}
@@ -112,32 +112,24 @@ func TestValidateSpecRejectsSQLMultipleResultQueues(t *testing.T) {
 		"model-b": {InferencePoolName: "pool-b"},
 	}
 
-	if err := validateSpec(g); err == nil || !strings.Contains(err.Error(), "one default result queue") {
-		t.Fatalf("validateSpec() error = %v, want SQL default result queue error", err)
+	if err := validateSpec(g); err != nil {
+		t.Fatalf("validateSpec() error = %v, want nil", err)
 	}
 }
 
-func TestValidateSpecAllowsSQLSharedResultQueue(t *testing.T) {
+func TestValidateSpecRejectsSQLSharedResultQueue(t *testing.T) {
 	g := minimalAsyncGateway()
 	g.Spec.Processor.AsyncConfig.Redis = nil
 	g.Spec.Processor.AsyncConfig.SQL = &batchv1alpha1.AsyncSQLSpec{}
 	g.Spec.Processor.AsyncConfig.ResultPollTimeout = testDuration30s
 	g.Spec.Processor.GlobalInferenceGateway = nil
 	g.Spec.Processor.ModelGateways = map[string]batchv1alpha1.InferenceGatewaySpec{
-		"model-a": {
-			InferencePoolName: "pool-a",
-			RequestQueueName:  "request-a",
-			ResultQueueName:   "result-shared",
-		},
-		"model-b": {
-			InferencePoolName: "pool-b",
-			RequestQueueName:  "request-b",
-			ResultQueueName:   "result-shared",
-		},
+		"model-a": {InferencePoolName: "pool-a"},
+		"model-b": {InferencePoolName: "pool-a"},
 	}
 
-	if err := validateSpec(g); err != nil {
-		t.Fatalf("validateSpec() error = %v, want nil", err)
+	if err := validateSpec(g); err == nil || !strings.Contains(err.Error(), "same SQL result queue") {
+		t.Fatalf("validateSpec() error = %v, want shared SQL result queue error", err)
 	}
 }
 
@@ -156,12 +148,12 @@ func TestValidateSpecAllowsSQLRequestQueueCoverage(t *testing.T) {
 		"model-a": {
 			InferencePoolName: "pool-a",
 			RequestQueueName:  "request-a",
-			ResultQueueName:   "result-shared",
+			ResultQueueName:   "result-a",
 		},
 		"model-b": {
 			InferencePoolName: "pool-b",
 			RequestQueueName:  "request-b",
-			ResultQueueName:   "result-shared",
+			ResultQueueName:   "result-b",
 		},
 	}
 
@@ -201,12 +193,12 @@ func TestValidateSpecRejectsSQLMissingRequestQueue(t *testing.T) {
 		"model-a": {
 			InferencePoolName: "pool-a",
 			RequestQueueName:  "request-a",
-			ResultQueueName:   "result-shared",
+			ResultQueueName:   "result-a",
 		},
 		"model-b": {
 			InferencePoolName: "pool-b",
 			RequestQueueName:  "request-b",
-			ResultQueueName:   "result-shared",
+			ResultQueueName:   "result-b",
 		},
 	}
 

@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"sort"
 	"time"
 
 	certmanagerv1 "github.com/cert-manager/cert-manager/pkg/apis/certmanager/v1"
@@ -711,15 +712,25 @@ func validateSpec(gw *batchv1alpha1.LLMBatchGateway) error {
 		}
 	}
 	if gw.Spec.Processor.AsyncConfig.SQL != nil {
-		expected := sqlResultQueueName(gw)
-		for model, gateway := range gw.Spec.Processor.ModelGateways {
-			actual := gateway.ResultQueueName
-			if actual == "" {
-				actual = asyncResultQueueName(gateway.InferencePoolName)
+		// The Batch Gateway processor polls <resultQueue>:<consumerID> once per
+		// model, and SQL result reads are destructive. Models sharing a result
+		// queue would consume and drop each other's results.
+		models := make([]string, 0, len(gw.Spec.Processor.ModelGateways))
+		for model := range gw.Spec.Processor.ModelGateways {
+			models = append(models, model)
+		}
+		sort.Strings(models)
+		resultQueues := make(map[string]string, len(models))
+		for _, model := range models {
+			gateway := gw.Spec.Processor.ModelGateways[model]
+			resultQueue := gateway.ResultQueueName
+			if resultQueue == "" {
+				resultQueue = asyncResultQueueName(gateway.InferencePoolName)
 			}
-			if actual != expected {
-				return fmt.Errorf("processor.modelGateways[%s].resultQueueName resolves to %q, but the SQL dispatcher has one default result queue (%q); set matching resultQueueName values", model, actual, expected)
+			if other, ok := resultQueues[resultQueue]; ok {
+				return fmt.Errorf("processor.modelGateways[%s] and processor.modelGateways[%s] resolve to the same SQL result queue %q; set distinct requestQueueName/resultQueueName pairs", other, model, resultQueue)
 			}
+			resultQueues[resultQueue] = model
 		}
 		if len(gw.Spec.Processor.AsyncConfig.SQL.QueuesConfig) > 0 {
 			configured := make(map[string]struct{}, len(gw.Spec.Processor.AsyncConfig.SQL.QueuesConfig))

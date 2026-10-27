@@ -125,8 +125,14 @@ spec:
         inferencePoolName: llama-pool
     asyncConfig:
       resultPollTimeout: 30s
-      redis: {}
+      inferenceGateway:
+        url: http://inference-gateway.default.svc:8000
+      redis:
+        queuesConfig:
+          - name: llm-d-async:requests:llama-pool
 ```
+
+An empty `redis: {}` is not enough: with no `queuesConfig` the dispatcher consumes a single queue named `request-sortedset`, not the `llm-d-async:requests:<inferencePoolName>` queue the processor submits to, and it needs `inferenceGateway` (or a per-queue `igwBaseURL`) to start. List one queue per `inferencePoolName`.
 
 The operator validates that async resources contain `asyncConfig`, model mappings, and an `inferencePoolName` for each model.
 
@@ -150,7 +156,8 @@ Choose exactly one async queue backend and configure it with the inference gatew
 ```yaml
 asyncConfig:
   redis:               # Redis/Valkey sorted-set, existing default
-    queuesConfig: []
+    queuesConfig:
+      - name: llm-d-async:requests:llama-pool
 ```
 
 or:
@@ -171,6 +178,12 @@ processor validation rather than silently treated as the default.
 
 The Batch Gateway and llm-d-async dispatcher must use the same transport and
 matching queue names. Do not configure both `redis` and `sql`.
+
+With the SQL transport, each model gateway must resolve to its own result queue
+(default `llm-d-async:results:<inferencePoolName>`), because the processor polls
+one result queue per model and SQL result reads are destructive. Models that
+share an `inferencePoolName` must set distinct `resultQueueName` values (with
+`requestQueueName`, which may be shared).
 
 Do not keep `globalInferenceGateway` when using async dispatch.
 

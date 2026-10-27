@@ -559,3 +559,25 @@ func hasEnvSecret(env []any, name, secretName, secretKey string) bool {
 	}
 	return false
 }
+
+func TestSpecToAsyncHelmValues_SQLDefaultQueuesDeduplicated(t *testing.T) {
+	g := minimalAsyncGateway()
+	g.Spec.Processor.GlobalInferenceGateway = nil
+	g.Spec.Processor.ModelGateways = map[string]batchv1alpha1.InferenceGatewaySpec{
+		"model-a": {InferencePoolName: "pool-a", RequestQueueName: "request-shared", ResultQueueName: "result-a"},
+		"model-b": {InferencePoolName: "pool-a", RequestQueueName: "request-shared", ResultQueueName: "result-b"},
+	}
+	g.Spec.Processor.AsyncConfig.Redis = nil
+	g.Spec.Processor.AsyncConfig.SQL = &batchv1alpha1.AsyncSQLSpec{}
+	g.Spec.Processor.AsyncConfig.ResultPollTimeout = testDuration30s
+
+	if err := validateSpec(g); err != nil {
+		t.Fatalf("validateSpec() error = %v, want nil", err)
+	}
+	vals := specToAsyncHelmValues(g, testSecretName(g), testImages())
+	ap := vals["ap"].(map[string]any)
+	queues := ap["transportConfig"].(map[string]any)["queues"].([]any)
+	if len(queues) != 1 {
+		t.Fatalf("len(queues) = %d, want 1 (deduplicated)", len(queues))
+	}
+}
