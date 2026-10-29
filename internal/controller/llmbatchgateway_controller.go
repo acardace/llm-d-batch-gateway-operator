@@ -4,8 +4,6 @@ import (
 	"context"
 	"errors"
 	"fmt"
-	"maps"
-	"slices"
 	"time"
 
 	certmanagerv1 "github.com/cert-manager/cert-manager/pkg/apis/certmanager/v1"
@@ -705,69 +703,128 @@ func validateSpec(gw *batchv1alpha1.LLMBatchGateway) error {
 			return fmt.Errorf("processor.modelGateways[%s].requestQueueName and resultQueueName must both be set or both be empty", model)
 		}
 	}
-	if gw.Spec.Processor.AsyncConfig.SQL != nil {
-		// The Batch Gateway processor polls <resultQueue>:<consumerID> once per
-		// model, and SQL result reads are destructive. Models sharing a result
-		// queue would consume and drop each other's results.
-		models := slices.Sorted(maps.Keys(gw.Spec.Processor.ModelGateways))
-		poolModels := make(map[string]string, len(models))
-		for _, model := range models {
-			gateway := gw.Spec.Processor.ModelGateways[model]
-			if other, ok := poolModels[gateway.InferencePoolName]; ok {
-				return fmt.Errorf("processor.modelGateways[%s] and processor.modelGateways[%s] use the same SQL inference pool %q; each model must use a distinct inferencePoolName", other, model, gateway.InferencePoolName)
-			}
-			poolModels[gateway.InferencePoolName] = model
-		}
+	switch {
+	case gw.Spec.Processor.AsyncConfig.Redis != nil:
+		return validateAsyncRedisConfig(gw)
+	case gw.Spec.Processor.AsyncConfig.SQL != nil:
+		return validateAsyncSQLConfig(gw)
+	}
+	return nil
+}
 
-		resultQueues := make(map[string]string, len(models))
-		for _, model := range models {
-			gateway := gw.Spec.Processor.ModelGateways[model]
-			resultQueue := sqlResultQueueNameFor(gateway)
-			if other, ok := resultQueues[resultQueue]; ok {
-				return fmt.Errorf("processor.modelGateways[%s] and processor.modelGateways[%s] resolve to the same SQL result queue %q; set distinct requestQueueName/resultQueueName pairs", other, model, resultQueue)
-			}
-			resultQueues[resultQueue] = model
+// validateAsyncRedisConfig validates the Redis async queue transport. The
+// dispatcher queue names must match the ones the batch processor publishes to,
+// and every queue needs an inference gateway URL, either its own igwBaseURL or
+// the shared asyncConfig.inferenceGateway.url.
+func validateAsyncRedisConfig(gw *batchv1alpha1.LLMBatchGateway) error {
+	ac := gw.Spec.Processor.AsyncConfig
+
+	// When queuesConfig is omitted the operator derives one queue per model
+	// gateway, instead of leaving the dispatcher on its built-in
+	// request-sortedset queue, which the processor never publishes to.
+	if len(ac.Redis.QueuesConfig) > 0 {
+		if err := validateAsyncQueueCoverage("redis", gw, ac.Redis.QueuesConfig); err != nil {
+			return err
 		}
-		if len(gw.Spec.Processor.AsyncConfig.SQL.QueuesConfig) > 0 {
-			configured := make(map[string]struct{}, len(gw.Spec.Processor.AsyncConfig.SQL.QueuesConfig))
-			for _, queue := range gw.Spec.Processor.AsyncConfig.SQL.QueuesConfig {
-				if _, exists := configured[queue.Name]; exists {
-					return fmt.Errorf("processor.asyncConfig.sql.queuesConfig contains duplicate queue %q", queue.Name)
-				}
-				configured[queue.Name] = struct{}{}
-			}
-			for _, model := range models {
-				gateway := gw.Spec.Processor.ModelGateways[model]
-				requestQueue := sqlRequestQueueName(gateway)
-				if _, ok := configured[requestQueue]; !ok {
-					return fmt.Errorf("processor.asyncConfig.sql.queuesConfig is missing request queue %q required by processor.modelGateways[%s]", requestQueue, model)
-				}
-			}
+	}
+	queues := redisQueues(gw)
+
+	if err := validateAsyncQueueGatewayURL("Redis", queues, ac.InferenceGateway); err != nil {
+		return err
+	}
+	return validateAsyncPrometheusGates("Redis", queues, ac.WorkerPools, ac.PrometheusURL)
+}
+
+// validateAsyncSQLConfig validates the SQL async queue transport.
+func validateAsyncSQLConfig(gw *batchv1alpha1.LLMBatchGateway) error {
+	ac := gw.Spec.Processor.AsyncConfig
+
+	// The Batch Gateway processor polls <resultQueue>:<consumerID> once per
+	// model, and SQL result reads are destructive. Models sharing a result
+	// queue would consume and drop each other's results.
+	models := sortedModelNames(gw)
+	poolModels := make(map[string]string, len(models))
+	for _, model := range models {
+		gateway := gw.Spec.Processor.ModelGateways[model]
+		if other, ok := poolModels[gateway.InferencePoolName]; ok {
+			return fmt.Errorf("processor.modelGateways[%s] and processor.modelGateways[%s] use the same SQL inference pool %q; each model must use a distinct inferencePoolName", other, model, gateway.InferencePoolName)
 		}
-		// The dispatcher requires igw_base_url on every queue; generated
-		// default queues carry none, so they need asyncConfig.inferenceGateway.
-		if ig := gw.Spec.Processor.AsyncConfig.InferenceGateway; ig == nil || ig.URL == "" {
-			queues := gw.Spec.Processor.AsyncConfig.SQL.QueuesConfig
-			if len(queues) == 0 {
-				queues = sqlQueueDefaults(gw)
-			}
-			for _, queue := range queues {
-				if queue.IGWBaseURL == "" {
-					return fmt.Errorf("processor.asyncConfig.inferenceGateway.url is required when SQL queue %q does not set igwBaseURL", queue.Name)
-				}
-			}
+		poolModels[gateway.InferencePoolName] = model
+	}
+
+	resultQueues := make(map[string]string, len(models))
+	for _, model := range models {
+		gateway := gw.Spec.Processor.ModelGateways[model]
+		resultQueue := sqlResultQueueNameFor(gateway)
+		if other, ok := resultQueues[resultQueue]; ok {
+			return fmt.Errorf("processor.modelGateways[%s] and processor.modelGateways[%s] resolve to the same SQL result queue %q; set distinct requestQueueName/resultQueueName pairs", other, model, resultQueue)
 		}
-		if gw.Spec.Processor.AsyncConfig.PrometheusURL == "" {
-			for _, queue := range gw.Spec.Processor.AsyncConfig.SQL.QueuesConfig {
-				if isPrometheusGate(queue.GateType) {
-					return fmt.Errorf("processor.asyncConfig.prometheusURL is required for SQL queue %q with gate %q", queue.Name, queue.GateType)
-				}
-			}
-			for _, pool := range gw.Spec.Processor.AsyncConfig.WorkerPools {
-				if isPrometheusGate(pool.GateType) {
-					return fmt.Errorf("processor.asyncConfig.prometheusURL is required for worker pool %q with gate %q", pool.Name, pool.GateType)
-				}
-			}
+		resultQueues[resultQueue] = model
+	}
+
+	if len(ac.SQL.QueuesConfig) > 0 {
+		if err := validateAsyncQueueCoverage("sql", gw, ac.SQL.QueuesConfig); err != nil {
+			return err
+		}
+	}
+	queues := sqlQueues(gw)
+
+	if err := validateAsyncQueueGatewayURL("SQL", queues, ac.InferenceGateway); err != nil {
+		return err
+	}
+	return validateAsyncPrometheusGates("SQL", queues, ac.WorkerPools, ac.PrometheusURL)
+}
+
+// validateAsyncQueueCoverage rejects duplicate queue names and, when queues are
+// configured explicitly, requires one entry per request queue the processor
+// publishes to. Without this the dispatcher polls queues nothing writes to.
+func validateAsyncQueueCoverage(transport string, gw *batchv1alpha1.LLMBatchGateway, queues []batchv1alpha1.AsyncQueueConfig) error {
+	configured := make(map[string]struct{}, len(queues))
+	for _, queue := range queues {
+		if _, exists := configured[queue.Name]; exists {
+			return fmt.Errorf("processor.asyncConfig.%s.queuesConfig contains duplicate queue %q", transport, queue.Name)
+		}
+		configured[queue.Name] = struct{}{}
+	}
+
+	for _, model := range sortedModelNames(gw) {
+		requestQueue := requestQueueNameFor(gw.Spec.Processor.ModelGateways[model])
+		if _, ok := configured[requestQueue]; !ok {
+			return fmt.Errorf("processor.asyncConfig.%s.queuesConfig is missing request queue %q required by processor.modelGateways[%s]", transport, requestQueue, model)
+		}
+	}
+	return nil
+}
+
+// validateAsyncQueueGatewayURL requires an inference gateway URL, either on the
+// queue itself or shared through asyncConfig.inferenceGateway. The dispatcher
+// cannot dispatch a queue without one.
+func validateAsyncQueueGatewayURL(transport string, queues []batchv1alpha1.AsyncQueueConfig, ig *batchv1alpha1.InferenceGatewaySpec) error {
+	if ig != nil && ig.URL != "" {
+		return nil
+	}
+	for _, queue := range queues {
+		if queue.IGWBaseURL == "" {
+			return fmt.Errorf("processor.asyncConfig.inferenceGateway.url is required when %s queue %q does not set igwBaseURL", transport, queue.Name)
+		}
+	}
+	return nil
+}
+
+// validateAsyncPrometheusGates requires prometheusURL for any queue or worker
+// pool that gates on Prometheus metrics.
+func validateAsyncPrometheusGates(transport string, queues []batchv1alpha1.AsyncQueueConfig, pools []batchv1alpha1.AsyncWorkerPool, prometheusURL string) error {
+	if prometheusURL != "" {
+		return nil
+	}
+	for _, queue := range queues {
+		if isPrometheusGate(queue.GateType) {
+			return fmt.Errorf("processor.asyncConfig.prometheusURL is required for %s queue %q with gate %q", transport, queue.Name, queue.GateType)
+		}
+	}
+	for _, pool := range pools {
+		if isPrometheusGate(pool.GateType) {
+			return fmt.Errorf("processor.asyncConfig.prometheusURL is required for worker pool %q with gate %q", pool.Name, pool.GateType)
 		}
 	}
 	return nil

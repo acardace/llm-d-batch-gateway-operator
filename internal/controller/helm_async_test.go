@@ -85,8 +85,11 @@ func TestSpecToAsyncHelmValues(t *testing.T) {
 			t.Fatalf("transportConfig.queues = %v, want one queue", transportConfig["queues"])
 		}
 		queue := queues[0].(map[string]any)
-		if got := queue["queue_name"]; got != "request-sortedset" {
-			t.Errorf("transportConfig.queues[0].queue_name = %v, want request-sortedset", got)
+		// With no queuesConfig the operator derives the queue the processor
+		// publishes to, instead of the dispatcher default request-sortedset.
+		wantQueue := asyncRequestQueueName("pool-a")
+		if got := queue["queue_name"]; got != wantQueue {
+			t.Errorf("transportConfig.queues[0].queue_name = %v, want %s", got, wantQueue)
 		}
 		if got := queue["igw_base_url"]; got != testInferenceGatewayURL {
 			t.Errorf("transportConfig.queues[0].igw_base_url = %v, want %s", got, testInferenceGatewayURL)

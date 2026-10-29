@@ -104,7 +104,12 @@ type AsyncRedisSpec struct {
 	GateParams map[string]string `json:"gateParams,omitempty"`
 
 	// QueuesConfig is a list of per-queue configurations.
-	// When set, overrides the single-queue settings (RequestPathURL, GateType, etc.).
+	// When set, overrides the single-queue settings (RequestPathURL, GateType, etc.)
+	// and must cover every request queue the processor publishes to, which is
+	// derived from processor.modelGateways.
+	// When omitted, one queue per processor.modelGateways entry is derived,
+	// named llm-d-async:requests:<inferencePoolName> unless the model sets
+	// requestQueueName; the single-queue settings above apply to each of them.
 	// +optional
 	QueuesConfig []AsyncQueueConfig `json:"queuesConfig,omitempty"`
 }

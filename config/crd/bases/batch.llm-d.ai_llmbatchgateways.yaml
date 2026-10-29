@@ -704,7 +704,12 @@ spec:
                           queuesConfig:
                             description: |-
                               QueuesConfig is a list of per-queue configurations.
-                              When set, overrides the single-queue settings (RequestPathURL, GateType, etc.).
+                              When set, overrides the single-queue settings (RequestPathURL, GateType, etc.)
+                              and must cover every request queue the processor publishes to, which is
+                              derived from processor.modelGateways.
+                              When omitted, one queue per processor.modelGateways entry is derived,
+                              named llm-d-async:requests:<inferencePoolName> unless the model sets
+                              requestQueueName; the single-queue settings above apply to each of them.
                             items:
                               description: AsyncQueueConfig configures a single async-processor
                                 request queue.

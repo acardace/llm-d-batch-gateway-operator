@@ -157,6 +157,144 @@ func TestValidateSpecRequiresAsyncTransport(t *testing.T) {
 	}
 }
 
+// TestValidateSpecRedis covers the Redis transport rules, which mirror the SQL
+// ones: queue coverage, an inference gateway URL and Prometheus gates.
+func TestValidateSpecRedis(t *testing.T) {
+	base := func() *batchv1alpha1.LLMBatchGateway {
+		g := minimalAsyncGateway()
+		g.Spec.Processor.Config = nil
+		g.Spec.Processor.AsyncConfig.ResultPollTimeout = testDuration30s
+		g.Spec.Processor.AsyncConfig.Redis = &batchv1alpha1.AsyncRedisSpec{}
+		g.Spec.Processor.ModelGateways = map[string]batchv1alpha1.ModelGatewaySpec{
+			"model-a": {InferencePoolName: "pool-a"},
+			"model-b": {InferencePoolName: "pool-b"},
+		}
+		return g
+	}
+
+	t.Run("derived queues need the shared gateway URL", func(t *testing.T) {
+		g := base()
+		g.Spec.Processor.AsyncConfig.InferenceGateway = nil
+
+		// Derived queues carry no igwBaseURL, so the first one to be checked
+		// reports the missing URL.
+		err := validateSpec(g)
+		if err == nil || !strings.Contains(err.Error(), "processor.asyncConfig.inferenceGateway.url is required when Redis queue") {
+			t.Fatalf("validateSpec() error = %v, want missing gateway URL error", err)
+		}
+	})
+
+	t.Run("derived queues accepted with shared gateway URL", func(t *testing.T) {
+		g := base()
+		g.Spec.Processor.AsyncConfig.InferenceGateway = &batchv1alpha1.InferenceGatewaySpec{URL: testInferenceGatewayURL}
+
+		if err := validateSpec(g); err != nil {
+			t.Fatalf("validateSpec() error = %v, want nil", err)
+		}
+	})
+
+	t.Run("per-queue gateway URLs are enough", func(t *testing.T) {
+		g := base()
+		g.Spec.Processor.AsyncConfig.InferenceGateway = nil
+		g.Spec.Processor.AsyncConfig.Redis.QueuesConfig = []batchv1alpha1.AsyncQueueConfig{
+			{Name: asyncRequestQueueName("pool-a"), IGWBaseURL: "http://a:8000"},
+			{Name: asyncRequestQueueName("pool-b"), IGWBaseURL: "http://b:8000"},
+		}
+
+		if err := validateSpec(g); err != nil {
+			t.Fatalf("validateSpec() error = %v, want nil", err)
+		}
+	})
+
+	t.Run("queuesConfig must cover every model queue", func(t *testing.T) {
+		g := base()
+		g.Spec.Processor.AsyncConfig.InferenceGateway = &batchv1alpha1.InferenceGatewaySpec{URL: testInferenceGatewayURL}
+		g.Spec.Processor.AsyncConfig.Redis.QueuesConfig = []batchv1alpha1.AsyncQueueConfig{
+			{Name: asyncRequestQueueName("pool-a")},
+		}
+
+		err := validateSpec(g)
+		want := `processor.asyncConfig.redis.queuesConfig is missing request queue "llm-d-async:requests:pool-b" required by processor.modelGateways[model-b]`
+		if err == nil || !strings.Contains(err.Error(), want) {
+			t.Fatalf("validateSpec() error = %v, want %q", err, want)
+		}
+	})
+
+	t.Run("explicit requestQueueName is used for coverage", func(t *testing.T) {
+		g := base()
+		g.Spec.Processor.AsyncConfig.InferenceGateway = &batchv1alpha1.InferenceGatewaySpec{URL: testInferenceGatewayURL}
+		g.Spec.Processor.ModelGateways = map[string]batchv1alpha1.ModelGatewaySpec{
+			"model-a": {InferencePoolName: "pool-a", RequestQueueName: "custom-requests", ResultQueueName: "custom-results"},
+		}
+		g.Spec.Processor.AsyncConfig.Redis.QueuesConfig = []batchv1alpha1.AsyncQueueConfig{
+			{Name: asyncRequestQueueName("pool-a")},
+		}
+
+		err := validateSpec(g)
+		if err == nil || !strings.Contains(err.Error(), `missing request queue "custom-requests"`) {
+			t.Fatalf("validateSpec() error = %v, want coverage error for the explicit queue name", err)
+		}
+	})
+
+	t.Run("duplicate queuesConfig entries rejected", func(t *testing.T) {
+		g := base()
+		g.Spec.Processor.AsyncConfig.InferenceGateway = &batchv1alpha1.InferenceGatewaySpec{URL: testInferenceGatewayURL}
+		name := asyncRequestQueueName("pool-a")
+		g.Spec.Processor.AsyncConfig.Redis.QueuesConfig = []batchv1alpha1.AsyncQueueConfig{
+			{Name: name},
+			{Name: name},
+		}
+
+		err := validateSpec(g)
+		if err == nil || !strings.Contains(err.Error(), `processor.asyncConfig.redis.queuesConfig contains duplicate queue`) {
+			t.Fatalf("validateSpec() error = %v, want duplicate queue error", err)
+		}
+	})
+}
+
+// TestRedisQueuesDerivedFromModels pins the effective dispatcher queues used for
+// both rendering and validation.
+func TestRedisQueuesDerivedFromModels(t *testing.T) {
+	g := minimalAsyncGateway()
+	g.Spec.Processor.AsyncConfig.Redis = &batchv1alpha1.AsyncRedisSpec{
+		RequestPathURL: "/v1/chat/completions",
+		GateType:       "prometheus-saturation",
+		GateParams:     map[string]string{"pool": "p"},
+	}
+	g.Spec.Processor.ModelGateways = map[string]batchv1alpha1.ModelGatewaySpec{
+		"model-a": {InferencePoolName: "pool-a"},
+		"model-b": {InferencePoolName: "pool-b", RequestQueueName: "shared-requests", ResultQueueName: "shared-results"},
+	}
+	g.Spec.Processor.ModelGateways["model-c"] = batchv1alpha1.ModelGatewaySpec{
+		InferencePoolName: "pool-c",
+		RequestQueueName:  "shared-requests",
+		ResultQueueName:   "other-results",
+	}
+
+	queues := redisQueues(g)
+	got := make([]string, 0, len(queues))
+	for _, q := range queues {
+		got = append(got, q.Name)
+		if q.RequestPathURL != "/v1/chat/completions" {
+			t.Errorf("queue %s requestPathURL = %q, want the top-level value", q.Name, q.RequestPathURL)
+		}
+		if q.GateType != "prometheus-saturation" {
+			t.Errorf("queue %s gateType = %q, want the top-level value", q.Name, q.GateType)
+		}
+	}
+
+	// One queue per distinct request queue name, in model order.
+	want := []string{asyncRequestQueueName("pool-a"), "shared-requests"}
+	if len(got) != len(want) {
+		t.Fatalf("redisQueues() = %v, want %v", got, want)
+	}
+	for i := range want {
+		if got[i] != want[i] {
+			t.Errorf("redisQueues()[%d] = %q, want %q", i, got[i], want[i])
+		}
+	}
+}
+
 // TestAsyncTLSAdmission pins the asyncConfig.tls invariants. Fixtures are
 // unstructured so an explicit "" survives omitempty and reaches the API server.
 func TestAsyncTLSAdmission(t *testing.T) {
@@ -495,17 +633,53 @@ func TestValidateSpecSQLPrometheusGateRequiresURL(t *testing.T) {
 	}
 }
 
-func TestValidateSpecDoesNotValidateRedisPrometheusGate(t *testing.T) {
-	g := minimalAsyncGateway()
-	g.Spec.Processor.AsyncConfig.ResultPollTimeout = testDuration30s
-	g.Spec.Processor.AsyncConfig.WorkerPools = []batchv1alpha1.AsyncWorkerPool{{Name: "default", Workers: 1, GateType: "prometheus-budget"}}
-	g.Spec.Processor.AsyncConfig.Redis.GateType = "prometheus-saturation"
-	g.Spec.Processor.ModelGateways = map[string]batchv1alpha1.ModelGatewaySpec{
-		"model-a": {InferencePoolName: "pool-a"},
+func TestValidateSpecRequiresPrometheusURLForRedisGates(t *testing.T) {
+	tests := []struct {
+		name          string
+		pools         []batchv1alpha1.AsyncWorkerPool
+		queueGate     string
+		prometheusURL string
+		wantMessage   string
+	}{
+		{
+			name:        "queue gate without prometheusURL",
+			queueGate:   "prometheus-saturation",
+			wantMessage: `prometheusURL is required for Redis queue`,
+		},
+		{
+			name:        "worker pool gate without prometheusURL",
+			pools:       []batchv1alpha1.AsyncWorkerPool{{Name: "default", Workers: 1, GateType: "prometheus-budget"}},
+			wantMessage: `prometheusURL is required for worker pool`,
+		},
+		{
+			name:          "prometheusURL set",
+			queueGate:     "prometheus-saturation",
+			prometheusURL: "http://prometheus:9090",
+		},
 	}
 
-	if err := validateSpec(g); err != nil {
-		t.Fatalf("validateSpec() error = %v, want unchanged Redis validation", err)
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			g := minimalAsyncGateway()
+			g.Spec.Processor.AsyncConfig.ResultPollTimeout = testDuration30s
+			g.Spec.Processor.AsyncConfig.WorkerPools = tt.pools
+			g.Spec.Processor.AsyncConfig.PrometheusURL = tt.prometheusURL
+			g.Spec.Processor.AsyncConfig.Redis.GateType = tt.queueGate
+			g.Spec.Processor.ModelGateways = map[string]batchv1alpha1.ModelGatewaySpec{
+				"model-a": {InferencePoolName: "pool-a"},
+			}
+
+			err := validateSpec(g)
+			if tt.wantMessage == "" {
+				if err != nil {
+					t.Fatalf("validateSpec() error = %v, want nil", err)
+				}
+				return
+			}
+			if err == nil || !strings.Contains(err.Error(), tt.wantMessage) {
+				t.Fatalf("validateSpec() error = %v, want %q", err, tt.wantMessage)
+			}
+		})
 	}
 }
 
@@ -1683,6 +1857,105 @@ func TestRecordFailure(t *testing.T) {
 			t.Error("expected a warning event, got none")
 		}
 	})
+}
+
+// TestReconcileRedisValidationFailure covers the invalid Redis shapes end to
+// end: the CR is accepted by the CRD, reconcile refuses to deploy workloads and
+// reports ValidationFailed with an actionable message.
+func TestReconcileRedisValidationFailure(t *testing.T) {
+	ctx := context.Background()
+
+	batchGWHelmRenderer, err := NewHelmRenderer("../../batch-gateway/charts/batch-gateway", testImages(), tlspkg.ProfileValues{})
+	if err != nil {
+		t.Fatalf("NewHelmRenderer(batch) error: %v", err)
+	}
+	asyncHelmRenderer, err := NewHelmRenderer("../../llm-d-async/charts/llm-d-async", testImages(), tlspkg.ProfileValues{})
+	if err != nil {
+		t.Fatalf("NewHelmRenderer(async) error: %v", err)
+	}
+
+	fakeRecorder := record.NewFakeRecorder(200)
+	reconciler := NewLLMBatchGatewayReconciler(k8sClient, k8sClient.Scheme(),
+		batchGWHelmRenderer, asyncHelmRenderer, fakeRecorder, 5*time.Minute, 30*time.Second)
+
+	tests := []struct {
+		name        string
+		mutate      func(*batchv1alpha1.LLMBatchGateway)
+		wantMessage string
+	}{
+		{
+			name: "derived queues without a gateway URL",
+			mutate: func(g *batchv1alpha1.LLMBatchGateway) {
+				g.Spec.Processor.AsyncConfig.InferenceGateway = nil
+			},
+			wantMessage: "processor.asyncConfig.inferenceGateway.url is required",
+		},
+		{
+			name: "queuesConfig does not cover the model queue",
+			mutate: func(g *batchv1alpha1.LLMBatchGateway) {
+				g.Spec.Processor.ModelGateways["model-b"] = batchv1alpha1.ModelGatewaySpec{InferencePoolName: "pool-b"}
+				g.Spec.Processor.AsyncConfig.Redis.QueuesConfig = []batchv1alpha1.AsyncQueueConfig{
+					{Name: asyncRequestQueueName("pool-a"), IGWBaseURL: testInferenceGatewayURL},
+				}
+			},
+			wantMessage: "processor.asyncConfig.redis.queuesConfig is missing request queue",
+		},
+		{
+			name: "prometheus gate without prometheusURL",
+			mutate: func(g *batchv1alpha1.LLMBatchGateway) {
+				g.Spec.Processor.AsyncConfig.Redis.GateType = "prometheus-saturation"
+			},
+			wantMessage: "processor.asyncConfig.prometheusURL is required for Redis queue",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			gw := newTestGateway("test-redis-validation-" + strings.ReplaceAll(strings.ToLower(tt.name), " ", "-"))
+			tt.mutate(gw)
+
+			if err := k8sClient.Create(ctx, gw); err != nil {
+				t.Fatalf("creating CR: %v", err)
+			}
+			t.Cleanup(func() { _ = k8sClient.Delete(ctx, gw) })
+
+			// A validation failure is reported through status, not as a
+			// reconcile error, and must happen before any workload is applied.
+			if _, err := reconciler.Reconcile(ctx, reconcile.Request{
+				NamespacedName: types.NamespacedName{Name: gw.Name, Namespace: gw.Namespace},
+			}); err != nil {
+				t.Fatalf("Reconcile() error = %v, want nil", err)
+			}
+
+			var updated batchv1alpha1.LLMBatchGateway
+			if err := k8sClient.Get(ctx, types.NamespacedName{Name: gw.Name, Namespace: gw.Namespace}, &updated); err != nil {
+				t.Fatalf("getting updated CR: %v", err)
+			}
+
+			readyCond := meta.FindStatusCondition(updated.Status.Conditions, conditionReady)
+			if readyCond == nil {
+				t.Fatal("Ready condition missing")
+			}
+			if readyCond.Reason != reasonValidationFailed {
+				t.Errorf("Ready reason = %q, want %q (message: %s)", readyCond.Reason, reasonValidationFailed, readyCond.Message)
+			}
+			if !strings.Contains(readyCond.Message, tt.wantMessage) {
+				t.Errorf("Ready message = %q, want it to contain %q", readyCond.Message, tt.wantMessage)
+			}
+
+			var deployments appsv1.DeploymentList
+			if err := k8sClient.List(ctx, &deployments); err != nil {
+				t.Fatalf("listing deployments: %v", err)
+			}
+			for i := range deployments.Items {
+				d := &deployments.Items[i]
+				if isOwnedBy(d, gw) && d.Labels[labelKeyComponent] == componentAsyncProcessor {
+					t.Error("async-processor Deployment must not be created for an invalid spec")
+				}
+			}
+			assertWarningEvent(t, fakeRecorder, reasonValidationFailed)
+		})
+	}
 }
 
 func TestReconcileNilAsyncRenderer(t *testing.T) {
