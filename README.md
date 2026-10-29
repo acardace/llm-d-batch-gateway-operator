@@ -100,7 +100,7 @@ make manifests  # updates config/crd/bases/batch.llm-d.ai_llmbatchgateways.yaml
 The reconcile loop lives in `internal/controller/llmbatchgateway_controller.go`. The flow is:
 
 1. Fetch the `LLMBatchGateway` CR
-2. Call `HelmRenderer.RenderChart()` to produce unstructured K8s objects
+2. Call `RenderBatchChart()` and `RenderAsyncChart()` to produce unstructured K8s objects
 3. Set owner references and apply each object via Server-Side Apply
 4. Update status conditions (`Ready`, `APIServerAvailable`, `ProcessorAvailable`, `GCAvailable`, `AsyncProcessorAvailable`)
 

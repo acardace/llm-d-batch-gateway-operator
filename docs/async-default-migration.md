@@ -13,8 +13,9 @@ re-deploy as async: see [Migration path](#migration-path-drain-then-re-deploy).
 
 ## Sync Dispatch Removal
 
-Synchronous dispatch has been removed. The following spec fields no longer
-exist:
+Synchronous dispatch is removed. The `dispatchMode` field remains only as a
+deprecated, async-only compatibility field; `dispatchMode: sync` is rejected.
+The following spec fields no longer exist:
 
 **Dispatch mode and storage**
 
@@ -24,13 +25,13 @@ exist:
 | `spec.redis` | `spec.processor.asyncConfig.redis` |
 | `spec.processor.config.inferenceObjective` | `spec.processor.modelGateways[].inferenceObjective` |
 
-`spec.processor.dispatchMode` is **retained but deprecated**, so manifests that
-still set `dispatchMode: async` keep applying — `kubectl` rejects unknown fields,
-so removing it outright would break them. The only accepted value is `async`;
-the operator ignores it. Set it to `sync` and admission rejects the resource, so
-remove the field from new manifests. A resource that still carries
-`dispatchMode: sync` from an earlier release can no longer be updated — including
-its status — and must be deleted as part of the drain-and-re-deploy below.
+`spec.processor.dispatchMode` is retained, so manifests that still set
+`dispatchMode: async` keep applying: `kubectl` rejects unknown fields, so removing
+it outright would break them. It is deprecated, `async` is the only accepted
+value, and the operator ignores it. Setting it to `sync` is rejected, so drop the
+field from new manifests. A resource that still carries `dispatchMode: sync` from
+an earlier release can no longer be updated, including its status, and must be
+deleted as part of the drain-and-re-deploy below.
 
 `spec.processor.globalInferenceGateway` was a whole gateway object, not a single
 URL. Model selection maps to `spec.processor.modelGateways[].inferencePoolName`,
