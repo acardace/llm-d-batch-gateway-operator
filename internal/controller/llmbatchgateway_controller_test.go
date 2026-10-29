@@ -3,6 +3,7 @@ package controller
 import (
 	"bytes"
 	"context"
+	"encoding/json"
 	"errors"
 	"io"
 	"os"
@@ -30,6 +31,8 @@ import (
 )
 
 const (
+	kindConfigMap           = "ConfigMap"
+	kindDeployment          = "Deployment"
 	llmBatchGatewayKind     = "LLMBatchGateway"
 	secretKind              = "Secret"
 	testDuration30s         = "30s"
@@ -233,6 +236,37 @@ func TestValidateSpecRedis(t *testing.T) {
 		err := validateSpec(g)
 		if err == nil || !strings.Contains(err.Error(), `missing request queue "custom-requests"`) {
 			t.Fatalf("validateSpec() error = %v, want coverage error for the explicit queue name", err)
+		}
+	})
+
+	t.Run("mixed per-queue URLs rejected when one queue has none", func(t *testing.T) {
+		g := base()
+		g.Spec.Processor.AsyncConfig.InferenceGateway = nil
+		g.Spec.Processor.AsyncConfig.Redis.QueuesConfig = []batchv1alpha1.AsyncQueueConfig{
+			{Name: asyncRequestQueueName("pool-a"), IGWBaseURL: "http://a:8000"},
+			{Name: asyncRequestQueueName("pool-b")},
+		}
+
+		err := validateSpec(g)
+		want := `processor.asyncConfig.inferenceGateway.url is required when Redis queue "llm-d-async:requests:pool-b" does not set igwBaseURL`
+		if err == nil || !strings.Contains(err.Error(), want) {
+			t.Fatalf("validateSpec() error = %v, want %q", err, want)
+		}
+	})
+
+	t.Run("queuesConfig entry for an unknown queue rejected", func(t *testing.T) {
+		g := base()
+		g.Spec.Processor.AsyncConfig.InferenceGateway = &batchv1alpha1.InferenceGatewaySpec{URL: testInferenceGatewayURL}
+		g.Spec.Processor.AsyncConfig.Redis.QueuesConfig = []batchv1alpha1.AsyncQueueConfig{
+			{Name: asyncRequestQueueName("pool-a")},
+			{Name: asyncRequestQueueName("pool-b")},
+			{Name: "llm-d-async:requests:typo-pool"},
+		}
+
+		err := validateSpec(g)
+		want := `processor.asyncConfig.redis.queuesConfig contains queue "llm-d-async:requests:typo-pool" that no processor.modelGateways entry publishes to`
+		if err == nil || !strings.Contains(err.Error(), want) {
+			t.Fatalf("validateSpec() error = %v, want %q", err, want)
 		}
 	})
 
@@ -1775,6 +1809,160 @@ func TestSamplesValidateAgainstCRD(t *testing.T) {
 			}
 		})
 	}
+}
+
+// TestRenderedAsyncQueueNamesMatch renders both charts and compares the request
+// queues the processor publishes to with the queues the dispatcher polls. They
+// are rendered from different sources, so nothing but this test keeps them in
+// agreement.
+func TestRenderedAsyncQueueNamesMatch(t *testing.T) {
+	batchRenderer, err := NewHelmRenderer("../../batch-gateway/charts/batch-gateway", testImages(), tlspkg.ProfileValues{})
+	if err != nil {
+		t.Fatalf("NewHelmRenderer(batch) error: %v", err)
+	}
+	asyncRenderer, err := NewHelmRenderer("../../llm-d-async/charts/llm-d-async", testImages(), tlspkg.ProfileValues{})
+	if err != nil {
+		t.Fatalf("NewHelmRenderer(async) error: %v", err)
+	}
+
+	transports := map[string]func(*batchv1alpha1.AsyncProcessorSpec){
+		"redis": func(ac *batchv1alpha1.AsyncProcessorSpec) { ac.Redis = &batchv1alpha1.AsyncRedisSpec{} },
+		"sql":   func(ac *batchv1alpha1.AsyncProcessorSpec) { ac.SQL = &batchv1alpha1.AsyncSQLSpec{} },
+	}
+
+	for name, setTransport := range transports {
+		t.Run(name, func(t *testing.T) {
+			gw := minimalAsyncGateway()
+			gw.Spec.Processor.AsyncConfig.Redis = nil
+			setTransport(gw.Spec.Processor.AsyncConfig)
+			gw.Spec.Processor.AsyncConfig.InferenceGateway = &batchv1alpha1.InferenceGatewaySpec{URL: testInferenceGatewayURL}
+			gw.Spec.Processor.ModelGateways = map[string]batchv1alpha1.ModelGatewaySpec{
+				// Derived queue name.
+				"model-a": {InferencePoolName: "pool-a"},
+				// Explicit queue name, and a second model sharing it.
+				"model-b": {InferencePoolName: "pool-b", RequestQueueName: "shared-requests", ResultQueueName: "results-b"},
+				"model-c": {InferencePoolName: "pool-c", RequestQueueName: "shared-requests", ResultQueueName: "results-c"},
+			}
+
+			published := renderedProcessorRequestQueues(t, batchRenderer, gw)
+			polled := renderedDispatcherQueues(t, asyncRenderer, gw)
+
+			if len(published) != len(polled) {
+				t.Fatalf("processor publishes to %v, dispatcher polls %v", published, polled)
+			}
+			for _, queue := range published {
+				if _, ok := polled[queue]; !ok {
+					t.Errorf("processor publishes to %q but the dispatcher does not poll it (%v)", queue, polled)
+				}
+			}
+		})
+	}
+}
+
+// renderedProcessorRequestQueues returns the request queues the rendered
+// batch-gateway processor config publishes to.
+func renderedProcessorRequestQueues(t *testing.T, renderer *HelmRenderer, gw *batchv1alpha1.LLMBatchGateway) []string {
+	t.Helper()
+
+	objects, err := renderer.RenderBatchChart(gw, testSecretName(gw))
+	if err != nil {
+		t.Fatalf("RenderBatchChart() error: %v", err)
+	}
+
+	var config string
+	for _, obj := range objects {
+		if obj.GetKind() != kindConfigMap || !strings.Contains(obj.GetName(), "processor") {
+			continue
+		}
+		config, _, err = unstructured.NestedString(obj.Object, "data", "config.yaml")
+		if err != nil || config == "" {
+			t.Fatalf("reading processor config.yaml: %v", err)
+		}
+	}
+	if config == "" {
+		t.Fatal("processor ConfigMap not rendered")
+	}
+
+	// util/yaml converts YAML to JSON, so these are json tags.
+	var parsed struct {
+		AsyncDispatch struct {
+			Models map[string]struct {
+				InferencePoolName string `json:"inference_pool_name"`
+				RequestQueueName  string `json:"request_queue_name"`
+			} `json:"models"`
+		} `json:"async_dispatch"`
+	}
+	if err := utilyaml.Unmarshal([]byte(config), &parsed); err != nil {
+		t.Fatalf("parsing processor config.yaml: %v", err)
+	}
+	if len(parsed.AsyncDispatch.Models) == 0 {
+		t.Fatalf("processor config has no async_dispatch.models:\n%s", config)
+	}
+
+	seen := map[string]struct{}{}
+	queues := make([]string, 0, len(parsed.AsyncDispatch.Models))
+	for model, m := range parsed.AsyncDispatch.Models {
+		queue := m.RequestQueueName
+		if queue == "" {
+			queue = asyncRequestQueueName(m.InferencePoolName)
+		}
+		if _, ok := seen[queue]; ok {
+			continue
+		}
+		seen[queue] = struct{}{}
+		queues = append(queues, queue)
+		t.Logf("processor: model %s publishes to %s", model, queue)
+	}
+	return queues
+}
+
+// renderedDispatcherQueues returns the queues the rendered dispatcher polls.
+func renderedDispatcherQueues(t *testing.T, renderer *HelmRenderer, gw *batchv1alpha1.LLMBatchGateway) map[string]struct{} {
+	t.Helper()
+
+	objects, err := renderer.RenderAsyncChart(gw, testSecretName(gw))
+	if err != nil {
+		t.Fatalf("RenderAsyncChart() error: %v", err)
+	}
+
+	var transportConfig string
+	for _, obj := range objects {
+		if obj.GetKind() != kindDeployment {
+			continue
+		}
+		containers, _, err := unstructured.NestedSlice(obj.Object, "spec", "template", "spec", "containers")
+		if err != nil || len(containers) == 0 {
+			t.Fatalf("reading dispatcher containers: %v", err)
+		}
+		args, _, err := unstructured.NestedStringSlice(containers[0].(map[string]any), "args")
+		if err != nil {
+			t.Fatalf("reading dispatcher args: %v", err)
+		}
+		for i, arg := range args {
+			if arg == "--transport-config" && i+1 < len(args) {
+				transportConfig = args[i+1]
+			}
+		}
+	}
+	if transportConfig == "" {
+		t.Fatal("dispatcher --transport-config not rendered")
+	}
+
+	var parsed struct {
+		Queues []struct {
+			QueueName string `json:"queue_name"`
+		} `json:"queues"`
+	}
+	if err := json.Unmarshal([]byte(transportConfig), &parsed); err != nil {
+		t.Fatalf("parsing --transport-config: %v", err)
+	}
+
+	polled := make(map[string]struct{}, len(parsed.Queues))
+	for _, queue := range parsed.Queues {
+		polled[queue.QueueName] = struct{}{}
+	}
+	t.Logf("dispatcher polls %v", polled)
+	return polled
 }
 
 func TestAllConditionTypes(t *testing.T) {

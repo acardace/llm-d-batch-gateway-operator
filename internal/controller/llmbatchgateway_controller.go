@@ -775,10 +775,15 @@ func validateAsyncSQLConfig(gw *batchv1alpha1.LLMBatchGateway) error {
 	return validateAsyncPrometheusGates("SQL", queues, ac.WorkerPools, ac.PrometheusURL)
 }
 
-// validateAsyncQueueCoverage rejects duplicate queue names and, when queues are
-// configured explicitly, requires one entry per request queue the processor
-// publishes to. Without this the dispatcher polls queues nothing writes to.
+// validateAsyncQueueCoverage requires the configured queues to match the request
+// queues the processor publishes to, one for one: a missing queue leaves results
+// stranded, and an extra queue polls a queue that nothing writes to.
 func validateAsyncQueueCoverage(transport string, gw *batchv1alpha1.LLMBatchGateway, queues []batchv1alpha1.AsyncQueueConfig) error {
+	published := make(map[string]string, len(gw.Spec.Processor.ModelGateways))
+	for _, model := range sortedModelNames(gw) {
+		published[requestQueueNameFor(gw.Spec.Processor.ModelGateways[model])] = model
+	}
+
 	configured := make(map[string]struct{}, len(queues))
 	for _, queue := range queues {
 		if _, exists := configured[queue.Name]; exists {
@@ -787,10 +792,18 @@ func validateAsyncQueueCoverage(transport string, gw *batchv1alpha1.LLMBatchGate
 		configured[queue.Name] = struct{}{}
 	}
 
+	// Report missing queues before extra ones: an under-specified config should
+	// say which queue is absent, not complain about the ones it does list.
 	for _, model := range sortedModelNames(gw) {
 		requestQueue := requestQueueNameFor(gw.Spec.Processor.ModelGateways[model])
 		if _, ok := configured[requestQueue]; !ok {
 			return fmt.Errorf("processor.asyncConfig.%s.queuesConfig is missing request queue %q required by processor.modelGateways[%s]", transport, requestQueue, model)
+		}
+	}
+
+	for _, queue := range queues {
+		if _, ok := published[queue.Name]; !ok {
+			return fmt.Errorf("processor.asyncConfig.%s.queuesConfig contains queue %q that no processor.modelGateways entry publishes to", transport, queue.Name)
 		}
 	}
 	return nil
