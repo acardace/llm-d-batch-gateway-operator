@@ -180,12 +180,15 @@ type AsyncQueueConfig struct {
 // AsyncTLSSpec configures TLS for the async processor's connections to the
 // inference gateway. It applies to every queue of the dispatcher, which is a
 // single process-wide client configuration.
+// These rules test presence, which implies non-empty only because every key is
+// MinLength=1.
 // +kubebuilder:validation:XValidation:rule="!(has(self.caCertKey) || has(self.certKey) || has(self.keyKey)) || has(self.secretName)",message="tls.secretName is required when tls.caCertKey, tls.certKey or tls.keyKey are set"
 // +kubebuilder:validation:XValidation:rule="has(self.certKey) == has(self.keyKey)",message="tls.certKey and tls.keyKey must both be set or both be empty"
 type AsyncTLSSpec struct {
 	// SecretName is the name of the Secret, in the LLMBatchGateway's namespace,
 	// that holds the CA certificate and optional client certificate/key. Its
 	// keys are selected with caCertKey, certKey and keyKey below.
+	// +kubebuilder:validation:MinLength=1
 	// +kubebuilder:validation:MaxLength=253
 	SecretName string `json:"secretName,omitempty"`
 
@@ -195,16 +198,19 @@ type AsyncTLSSpec struct {
 
 	// CACertKey is the key in SecretName holding a custom CA certificate used to
 	// verify the inference gateway.
+	// +kubebuilder:validation:MinLength=1
 	// +kubebuilder:validation:MaxLength=253
 	CACertKey string `json:"caCertKey,omitempty"`
 
 	// CertKey is the key in SecretName holding the client certificate for mutual
 	// TLS. Requires keyKey.
+	// +kubebuilder:validation:MinLength=1
 	// +kubebuilder:validation:MaxLength=253
 	CertKey string `json:"certKey,omitempty"`
 
 	// KeyKey is the key in SecretName holding the client private key for mutual
 	// TLS. Requires certKey.
+	// +kubebuilder:validation:MinLength=1
 	// +kubebuilder:validation:MaxLength=253
 	KeyKey string `json:"keyKey,omitempty"`
 }

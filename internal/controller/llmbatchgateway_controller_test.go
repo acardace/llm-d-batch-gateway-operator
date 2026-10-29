@@ -157,75 +157,161 @@ func TestValidateSpecRequiresAsyncTransport(t *testing.T) {
 	}
 }
 
-// TestAsyncTLSAdmission pins the asyncConfig.tls invariants that the Helm chart
-// would otherwise enforce silently: cert keys need a Secret to mount, and a
-// client certificate/key pair must be complete.
+// TestAsyncTLSAdmission pins the asyncConfig.tls invariants. Fixtures are
+// unstructured so an explicit "" survives omitempty and reaches the API server.
 func TestAsyncTLSAdmission(t *testing.T) {
 	ctx := context.Background()
 	tests := []struct {
 		name        string
-		tls         *batchv1alpha1.AsyncTLSSpec
+		tls         map[string]any
 		wantInvalid bool
 		wantMessage string
 	}{
-		{
-			name: "secret with CA",
-			tls:  &batchv1alpha1.AsyncTLSSpec{SecretName: "igw-tls", CACertKey: "ca.crt"},
-		},
-		{
-			name: "secret with mTLS pair",
-			tls:  &batchv1alpha1.AsyncTLSSpec{SecretName: "igw-tls", CertKey: "tls.crt", KeyKey: "tls.key"},
-		},
-		{
-			name: "insecure skip verify alone",
-			tls:  &batchv1alpha1.AsyncTLSSpec{InsecureSkipVerify: true},
-		},
+		{name: "secret with CA", tls: map[string]any{"secretName": "igw-tls", "caCertKey": "ca.crt"}},
+		{name: "secret with mTLS pair", tls: map[string]any{"secretName": "igw-tls", "certKey": "tls.crt", "keyKey": "tls.key"}},
+		{name: "insecure skip verify alone", tls: map[string]any{"insecureSkipVerify": true}},
 		{
 			name:        "CA key without secret",
-			tls:         &batchv1alpha1.AsyncTLSSpec{CACertKey: "ca.crt"},
+			tls:         map[string]any{"caCertKey": "ca.crt"},
 			wantInvalid: true,
 			wantMessage: "tls.secretName is required",
 		},
 		{
 			name:        "client cert without secret",
-			tls:         &batchv1alpha1.AsyncTLSSpec{CertKey: "tls.crt", KeyKey: "tls.key"},
+			tls:         map[string]any{"certKey": "tls.crt", "keyKey": "tls.key"},
 			wantInvalid: true,
 			wantMessage: "tls.secretName is required",
 		},
 		{
 			name:        "client cert without key",
-			tls:         &batchv1alpha1.AsyncTLSSpec{SecretName: "igw-tls", CertKey: "tls.crt"},
+			tls:         map[string]any{"secretName": "igw-tls", "certKey": "tls.crt"},
 			wantInvalid: true,
 			wantMessage: "tls.certKey and tls.keyKey must both be set or both be empty",
 		},
 		{
 			name:        "client key without cert",
-			tls:         &batchv1alpha1.AsyncTLSSpec{SecretName: "igw-tls", KeyKey: "tls.key"},
+			tls:         map[string]any{"secretName": "igw-tls", "keyKey": "tls.key"},
 			wantInvalid: true,
 			wantMessage: "tls.certKey and tls.keyKey must both be set or both be empty",
+		},
+		{
+			// has() is true for "", so MinLength is what rejects this.
+			name:        "explicit empty cert and key",
+			tls:         map[string]any{"secretName": "igw-tls", "certKey": "", "keyKey": ""},
+			wantInvalid: true,
+		},
+		{
+			name:        "explicit empty cert with real key",
+			tls:         map[string]any{"secretName": "igw-tls", "certKey": "", "keyKey": "tls.key"},
+			wantInvalid: true,
+		},
+		{
+			name:        "explicit empty CA key",
+			tls:         map[string]any{"secretName": "igw-tls", "caCertKey": ""},
+			wantInvalid: true,
+		},
+		{
+			name:        "explicit empty secret name with cert keys",
+			tls:         map[string]any{"secretName": "", "certKey": "tls.crt", "keyKey": "tls.key"},
+			wantInvalid: true,
 		},
 	}
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			gw := newTestAsyncGateway("test-tls-" + strings.ReplaceAll(strings.ToLower(tt.name), " ", "-"))
-			gw.Spec.Processor.AsyncConfig.Redis = &batchv1alpha1.AsyncRedisSpec{}
-			gw.Spec.Processor.AsyncConfig.TLS = tt.tls
+			obj := &unstructured.Unstructured{}
+			obj.SetUnstructuredContent(map[string]any{
+				"apiVersion": batchv1alpha1.GroupVersion.String(),
+				"kind":       llmBatchGatewayKind,
+				"metadata": map[string]any{
+					"name":      "test-tls-" + strings.ReplaceAll(strings.ToLower(tt.name), " ", "-"),
+					"namespace": "default",
+				},
+				"spec": map[string]any{
+					"secretRef":   map[string]any{"name": "test-secrets"},
+					"fileStorage": map[string]any{"s3": map[string]any{"bucket": "llm-d-batch-gateway"}},
+					"apiServer":   map[string]any{},
+					"gc":          map[string]any{},
+					"processor": map[string]any{
+						"asyncConfig": map[string]any{
+							"redis": map[string]any{},
+							"tls":   tt.tls,
+						},
+					},
+				},
+			})
 
-			err := k8sClient.Create(ctx, gw)
+			err := k8sClient.Create(ctx, obj)
 			if !tt.wantInvalid {
 				if err != nil {
 					t.Fatalf("Create() error = %v, want nil", err)
 				}
-				t.Cleanup(func() { _ = k8sClient.Delete(ctx, gw) })
+				t.Cleanup(func() { _ = k8sClient.Delete(ctx, obj) })
 				return
 			}
 			if !apierrors.IsInvalid(err) {
 				t.Fatalf("Create() error = %v, want Invalid", err)
 			}
-			if !strings.Contains(err.Error(), tt.wantMessage) {
+			if tt.wantMessage != "" && !strings.Contains(err.Error(), tt.wantMessage) {
 				t.Errorf("Create() error = %v, want message %q", err, tt.wantMessage)
 			}
+		})
+	}
+}
+
+// TestDispatchModeDeprecatedField pins the compatibility shim: manifests that
+// still set dispatchMode: async keep applying (kubectl rejects unknown fields,
+// so dropping the field would break them), while sync is refused.
+func TestDispatchModeDeprecatedField(t *testing.T) {
+	ctx := context.Background()
+	tests := []struct {
+		name         string
+		dispatchMode string
+		wantInvalid  bool
+	}{
+		{name: "absent"},
+		{name: "async", dispatchMode: "async"},
+		{name: "sync", dispatchMode: "sync", wantInvalid: true},
+		{name: "unknown", dispatchMode: "parallel", wantInvalid: true},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			processor := map[string]any{
+				"asyncConfig": map[string]any{"redis": map[string]any{}},
+			}
+			if tt.dispatchMode != "" {
+				processor["dispatchMode"] = tt.dispatchMode
+			}
+
+			obj := &unstructured.Unstructured{}
+			obj.SetUnstructuredContent(map[string]any{
+				"apiVersion": batchv1alpha1.GroupVersion.String(),
+				"kind":       llmBatchGatewayKind,
+				"metadata": map[string]any{
+					"name":      "test-dispatchmode-" + strings.ToLower(tt.name),
+					"namespace": "default",
+				},
+				"spec": map[string]any{
+					"secretRef":   map[string]any{"name": "test-secrets"},
+					"fileStorage": map[string]any{"s3": map[string]any{"bucket": "llm-d-batch-gateway"}},
+					"apiServer":   map[string]any{},
+					"gc":          map[string]any{},
+					"processor":   processor,
+				},
+			})
+
+			err := k8sClient.Create(ctx, obj)
+			if tt.wantInvalid {
+				if !apierrors.IsInvalid(err) {
+					t.Fatalf("Create() with dispatchMode %q error = %v, want Invalid", tt.dispatchMode, err)
+				}
+				return
+			}
+			if err != nil {
+				t.Fatalf("Create() with dispatchMode %q error = %v, want nil", tt.dispatchMode, err)
+			}
+			t.Cleanup(func() { _ = k8sClient.Delete(ctx, obj) })
 		})
 	}
 }
@@ -1378,7 +1464,6 @@ func TestRemovedModelGatewayFieldsArePruned(t *testing.T) {
 			"apiServer":   map[string]any{},
 			"gc":          map[string]any{},
 			"processor": map[string]any{
-				"dispatchMode": "sync",
 				"globalInferenceGateway": map[string]any{
 					"url": "http://legacy-gateway:8000",
 				},
@@ -1428,10 +1513,10 @@ func TestRemovedModelGatewayFieldsArePruned(t *testing.T) {
 		}
 	}
 	processorSpec := got.Object["spec"].(map[string]any)["processor"].(map[string]any)
-	for _, removed := range []string{"dispatchMode", "globalInferenceGateway"} {
-		if _, ok := processorSpec[removed]; ok {
-			t.Errorf("spec.processor.%s still present after admission, want pruned", removed)
-		}
+	// dispatchMode is not asserted here: it is retained as a deprecated
+	// async-only field, covered by TestDispatchModeDeprecatedField.
+	if _, ok := processorSpec["globalInferenceGateway"]; ok {
+		t.Error("spec.processor.globalInferenceGateway still present after admission, want pruned")
 	}
 
 	model, found, err := unstructured.NestedMap(got.Object, "spec", "processor", "modelGateways", "model-a")

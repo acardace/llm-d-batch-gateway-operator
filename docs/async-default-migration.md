@@ -20,10 +20,17 @@ exist:
 
 | Removed field | Replacement |
 |---|---|
-| `spec.processor.dispatchMode` | none; async dispatch is always used |
 | `spec.processor.globalInferenceGateway` | `spec.processor.modelGateways[]` (see below) |
 | `spec.redis` | `spec.processor.asyncConfig.redis` |
 | `spec.processor.config.inferenceObjective` | `spec.processor.modelGateways[].inferenceObjective` |
+
+`spec.processor.dispatchMode` is **retained but deprecated**, so manifests that
+still set `dispatchMode: async` keep applying — `kubectl` rejects unknown fields,
+so removing it outright would break them. The only accepted value is `async`;
+the operator ignores it. Set it to `sync` and admission rejects the resource, so
+remove the field from new manifests. A resource that still carries
+`dispatchMode: sync` from an earlier release can no longer be updated — including
+its status — and must be deleted as part of the drain-and-re-deploy below.
 
 `spec.processor.globalInferenceGateway` was a whole gateway object, not a single
 URL. Model selection maps to `spec.processor.modelGateways[].inferencePoolName`,
@@ -44,20 +51,25 @@ they were accepted under both `globalInferenceGateway` and every
 | `tlsCACertFile`, `tlsClientCertFile`, `tlsClientKeyFile` | none per gateway. Configure gateway TLS with `spec.processor.asyncConfig.tls` (Secret-backed keys). |
 | `tlsInsecureSkipVerify` | none. It was already rejected by validation; use `spec.processor.asyncConfig.tls.insecureSkipVerify` only where unavoidable. |
 
+Inside `spec.processor.asyncConfig.tls`, every key (`secretName`, `caCertKey`,
+`certKey`, `keyKey`) must be non-empty when present: an explicit `""` is rejected
+rather than silently dropped from the rendered configuration.
+
 `spec.processor.asyncConfig` is now required, as is at least one
 `spec.processor.modelGateways` entry with an `inferencePoolName`.
 
 ### What the API server does with a removed field
 
 Removed fields are **pruned, not rejected**. The CRD does not preserve unknown
-fields, so a manifest that still sets `dispatchMode`, `globalInferenceGateway`,
-`spec.redis`, or any of the per-gateway tuning knobs **applies successfully**
-and those keys are silently dropped. Read the object back to see what was
+fields, so a manifest that still sets `globalInferenceGateway`, `spec.redis`, or
+any of the per-gateway tuning knobs **applies successfully** and those keys are
+silently dropped (`dispatchMode` is exempt: it still exists, so `kubectl` accepts
+`async` and refuses `sync`). Read the object back to see what was
 stored:
 
 ```bash
 kubectl get llmbatchgateway <name> -n <namespace> -o yaml \
-  | grep -E '^  redis:|dispatchMode|globalInferenceGateway|requestTimeout|maxRetries|initialBackoff|maxBackoff|tlsCACertFile|tlsClientCertFile|tlsClientKeyFile' \
+  | grep -E '^  redis:|globalInferenceGateway|requestTimeout|maxRetries|initialBackoff|maxBackoff|tlsCACertFile|tlsClientCertFile|tlsClientKeyFile' \
   || echo "all removed fields pruned"
 ```
 

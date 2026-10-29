@@ -316,6 +316,16 @@ type ProcessorSpec struct {
 	// Config holds fine-grained processor configuration.
 	Config *ProcessorConfigSpec `json:"config,omitempty"`
 
+	// DispatchMode is retained so manifests written before synchronous dispatch
+	// was removed keep applying; the operator always dispatches asynchronously
+	// and ignores the value.
+	//
+	// Deprecated: async is the only supported value. Remove this field from new
+	// manifests; setting it to "sync" is rejected, and resources that still use
+	// synchronous dispatch must be drained and re-deployed as async.
+	// +kubebuilder:validation:Enum=async
+	DispatchMode string `json:"dispatchMode,omitempty"`
+
 	// ModelGateways maps model names to their async dispatch pool.
 	// Each entry must include an inferencePoolName.
 	ModelGateways map[string]ModelGatewaySpec `json:"modelGateways,omitempty"`

@@ -930,12 +930,14 @@ spec:
                               CACertKey is the key in SecretName holding a custom CA certificate used to
                               verify the inference gateway.
                             maxLength: 253
+                            minLength: 1
                             type: string
                           certKey:
                             description: |-
                               CertKey is the key in SecretName holding the client certificate for mutual
                               TLS. Requires keyKey.
                             maxLength: 253
+                            minLength: 1
                             type: string
                           insecureSkipVerify:
                             description: |-
@@ -947,6 +949,7 @@ spec:
                               KeyKey is the key in SecretName holding the client private key for mutual
                               TLS. Requires certKey.
                             maxLength: 253
+                            minLength: 1
                             type: string
                           secretName:
                             description: |-
@@ -954,6 +957,7 @@ spec:
                               that holds the CA certificate and optional client certificate/key. Its
                               keys are selected with caCertKey, certKey and keyKey below.
                             maxLength: 253
+                            minLength: 1
                             type: string
                         type: object
                         x-kubernetes-validations:
@@ -1179,6 +1183,18 @@ spec:
                           to the inference gateway for fair scheduling across tenants.
                         type: boolean
                     type: object
+                  dispatchMode:
+                    description: |-
+                      DispatchMode is retained so manifests written before synchronous dispatch
+                      was removed keep applying; the operator always dispatches asynchronously
+                      and ignores the value.
+
+                      Deprecated: async is the only supported value. Remove this field from new
+                      manifests; setting it to "sync" is rejected, and resources that still use
+                      synchronous dispatch must be drained and re-deployed as async.
+                    enum:
+                    - async
+                    type: string
                   imagePullPolicy:
                     description: |-
                       ImagePullPolicy overrides the image pull policy for the processor container.
