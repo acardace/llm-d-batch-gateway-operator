@@ -41,6 +41,7 @@ const (
 	conditionAsyncProcessorAvailable = "AsyncProcessorAvailable"
 
 	dispatchModeAsync        = "async"
+	dispatchModeSync         = "sync"
 	dbBackendPostgreSQL      = "postgresql"
 	gatePrometheusBudget     = "prometheus-budget"
 	gatePrometheusQuery      = "prometheus-query"
@@ -713,6 +714,12 @@ func conditionReason(ok bool, trueReason, falseReason string) string {
 func validateSpec(gw *batchv1alpha1.LLMBatchGateway) error {
 	if gw.Spec.DBBackend != "" && gw.Spec.DBBackend != dbBackendPostgreSQL {
 		return fmt.Errorf("spec.dbBackend %q is not supported; only \"postgresql\" is supported by batch-gateway", gw.Spec.DBBackend)
+	}
+	// The CRD only accepts "async", but a resource stored before synchronous
+	// dispatch was removed can still carry "sync". Reject it instead of
+	// rendering async configuration for it.
+	if mode := gw.Spec.Processor.DispatchMode; mode != "" && mode != dispatchModeAsync { //nolint:staticcheck // deprecated field is read to reject sync
+		return fmt.Errorf("processor.dispatchMode %q is not supported; synchronous dispatch was removed, drain this resource and re-deploy it with async dispatch", mode)
 	}
 	if gw.Spec.Processor.AsyncConfig == nil {
 		return errors.New("processor.asyncConfig is required")

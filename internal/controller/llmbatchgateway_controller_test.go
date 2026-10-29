@@ -89,6 +89,20 @@ func TestValidateSpec(t *testing.T) {
 		}
 	})
 
+	t.Run("rejects a stored sync dispatch mode", func(t *testing.T) {
+		// The CRD only accepts "async" now, but a resource stored before sync
+		// dispatch was removed can still carry it and must not be rendered as
+		// async configuration.
+		gw := newTestGateway("test-stored-sync")
+		gw.Spec.Processor.DispatchMode = dispatchModeSync //nolint:staticcheck // deprecated field is set to prove it is rejected
+
+		err := validateSpec(gw)
+		want := `processor.dispatchMode "sync" is not supported; synchronous dispatch was removed`
+		if err == nil || !strings.Contains(err.Error(), want) {
+			t.Fatalf("validateSpec() error = %v, want %q", err, want)
+		}
+	})
+
 	t.Run("rejects missing asyncConfig", func(t *testing.T) {
 		gw := newTestGateway("test-no-asyncconfig")
 		gw.Spec.Processor.AsyncConfig = nil
