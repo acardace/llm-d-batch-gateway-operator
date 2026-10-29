@@ -210,9 +210,11 @@ Confirm that every resource that will still exist after the upgrade:
 - has `spec.processor.asyncConfig` with a `resultPollTimeout`,
 - has at least one `spec.processor.modelGateways` entry with an `inferencePoolName`,
 - sets `spec.dbBackend: postgresql`,
-- sets none of the fields listed under
-  [Sync Dispatch Removal](#sync-dispatch-removal) — neither
-  `dispatchMode`/`globalInferenceGateway`/`spec.redis` nor per-gateway
+- does not set `spec.processor.dispatchMode: sync` (`async` is accepted and is
+  the CRD default),
+- sets none of the removed fields listed under
+  [Sync Dispatch Removal](#sync-dispatch-removal): neither
+  `globalInferenceGateway` or `spec.redis`, nor the per-gateway
   `requestTimeout`/`maxRetries`/`initialBackoff`/`maxBackoff`/`tlsCACertFile`/
   `tlsClientCertFile`/`tlsClientKeyFile`/`tlsInsecureSkipVerify`.
 
@@ -340,8 +342,8 @@ storage; batches that were in flight when you drained must be resubmitted.
 - Manifests without `asyncConfig` are rejected at admission
   (`spec.processor.asyncConfig: Required value`).
 - Removed fields are pruned rather than rejected: after applying, reading the
-  object back shows no `dispatchMode`, `globalInferenceGateway`, `spec.redis`,
-  or per-gateway tuning knobs.
+  object back shows no `globalInferenceGateway`, `spec.redis`, or per-gateway
+  tuning knobs, while `dispatchMode: sync` is refused at admission.
 - Async requests and results flow through the selected Redis/Valkey or
   PostgreSQL SQL transport.
 - Async cancellation and deadline handling continue to work.
