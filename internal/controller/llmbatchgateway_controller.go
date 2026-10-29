@@ -644,9 +644,13 @@ func deploymentReplicaStatus(d *appsv1.Deployment) (replicas, readyReplicas int3
 	if d.Spec.Replicas != nil {
 		desired = *d.Spec.Replicas
 	}
+	// Equality, not greater-or-equal: during a scale-down every pod already runs
+	// the current template, so updatedReplicas and replicas both stay at the old
+	// count until the surplus pods are gone. A surge pod from a rolling update is
+	// also surplus until it terminates.
 	rolledOut := d.Status.ObservedGeneration >= d.Generation &&
-		d.Status.UpdatedReplicas >= desired &&
-		d.Status.Replicas <= d.Status.UpdatedReplicas &&
+		d.Status.UpdatedReplicas == desired &&
+		d.Status.Replicas == desired &&
 		d.Status.ReadyReplicas >= desired
 	return desired, reportedReadyReplicas(d.Status.ReadyReplicas, desired, rolledOut)
 }
@@ -659,8 +663,8 @@ func statefulSetReplicaStatus(ss *appsv1.StatefulSet) (replicas, readyReplicas i
 		desired = *ss.Spec.Replicas
 	}
 	rolledOut := ss.Status.ObservedGeneration >= ss.Generation &&
-		ss.Status.UpdatedReplicas >= desired &&
-		ss.Status.Replicas <= desired &&
+		ss.Status.UpdatedReplicas == desired &&
+		ss.Status.Replicas == desired &&
 		ss.Status.ReadyReplicas >= desired &&
 		ss.Status.CurrentRevision == ss.Status.UpdateRevision
 	return desired, reportedReadyReplicas(ss.Status.ReadyReplicas, desired, rolledOut)

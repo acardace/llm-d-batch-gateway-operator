@@ -2292,15 +2292,29 @@ func TestDeploymentReplicaStatus(t *testing.T) {
 			wantDesired: 3, wantReady: 0,
 		},
 		{
-			name: "scale down with surplus ready pods",
+			// Scale-down without a template change: every pod already runs the
+			// current template, so updatedReplicas stays at the old count until
+			// the surplus pods are gone.
+			name: "scale down where every pod is already updated",
 			deploy: &appsv1.Deployment{
 				ObjectMeta: metav1.ObjectMeta{Generation: 2},
 				Spec:       appsv1.DeploymentSpec{Replicas: replicas(1)},
 				Status: appsv1.DeploymentStatus{
-					ObservedGeneration: 2, UpdatedReplicas: 2, Replicas: 3, ReadyReplicas: 3,
+					ObservedGeneration: 2, UpdatedReplicas: 3, Replicas: 3, ReadyReplicas: 3,
 				},
 			},
 			wantDesired: 1, wantReady: 0,
+		},
+		{
+			name: "surge pod still terminating",
+			deploy: &appsv1.Deployment{
+				ObjectMeta: metav1.ObjectMeta{Generation: 2},
+				Spec:       appsv1.DeploymentSpec{Replicas: replicas(3)},
+				Status: appsv1.DeploymentStatus{
+					ObservedGeneration: 2, UpdatedReplicas: 3, Replicas: 4, ReadyReplicas: 4,
+				},
+			},
+			wantDesired: 3, wantReady: 0,
 		},
 		{
 			name: "settled after scale down caps ready at desired",
@@ -2363,6 +2377,18 @@ func TestStatefulSetReplicaStatus(t *testing.T) {
 			wantDesired: 2, wantReady: 2,
 		},
 		{
+			name: "controller has not observed the spec yet",
+			sts: &appsv1.StatefulSet{
+				ObjectMeta: metav1.ObjectMeta{Generation: 3},
+				Spec:       appsv1.StatefulSetSpec{Replicas: replicas(1)},
+				Status: appsv1.StatefulSetStatus{
+					ObservedGeneration: 2, UpdatedReplicas: 1, Replicas: 1, ReadyReplicas: 1,
+					CurrentRevision: "rev-2", UpdateRevision: "rev-2",
+				},
+			},
+			wantDesired: 1, wantReady: 0,
+		},
+		{
 			name: "revision still changing",
 			sts: &appsv1.StatefulSet{
 				ObjectMeta: metav1.ObjectMeta{Generation: 2},
@@ -2387,7 +2413,10 @@ func TestStatefulSetReplicaStatus(t *testing.T) {
 			wantDesired: 3, wantReady: 0,
 		},
 		{
-			name: "scale down with surplus pods",
+			// Scale-down without a template change: every pod already runs the
+			// update revision, so updatedReplicas stays at the old count until
+			// the surplus pods are gone.
+			name: "scale down where every pod is already updated",
 			sts: &appsv1.StatefulSet{
 				ObjectMeta: metav1.ObjectMeta{Generation: 2},
 				Spec:       appsv1.StatefulSetSpec{Replicas: replicas(1)},
