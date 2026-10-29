@@ -414,15 +414,9 @@ func (r *LLMBatchGatewayReconciler) updateStatus(ctx context.Context, gw *batchv
 			continue
 		}
 
-		updatedReplicas := d.Status.UpdatedReplicas
-		readyReplicas := d.Status.ReadyReplicas
-
-		if d.Status.ObservedGeneration < d.Generation {
-			readyReplicas = 0
-		}
-
+		replicas, readyReplicas := deploymentReplicaStatus(d)
 		setComponentStatus(componentStatus, component, &batchv1alpha1.ComponentReplicaStatus{
-			Replicas:      updatedReplicas,
+			Replicas:      replicas,
 			ReadyReplicas: readyReplicas,
 		})
 	}
@@ -444,16 +438,9 @@ func (r *LLMBatchGatewayReconciler) updateStatus(ctx context.Context, gw *batchv
 			continue
 		}
 
-		updatedReplicas := ss.Status.UpdatedReplicas
-		readyReplicas := ss.Status.ReadyReplicas
-
-		if ss.Status.CurrentRevision != ss.Status.UpdateRevision ||
-			ss.Status.ObservedGeneration < ss.Generation {
-			readyReplicas = 0
-		}
-
+		replicas, readyReplicas := statefulSetReplicaStatus(ss)
 		setComponentStatus(componentStatus, component, &batchv1alpha1.ComponentReplicaStatus{
-			Replicas:      updatedReplicas,
+			Replicas:      replicas,
 			ReadyReplicas: readyReplicas,
 		})
 	}
@@ -645,6 +632,53 @@ func setComponentStatus(componentStatus *batchv1alpha1.ComponentStatus, componen
 // component and reports whether it is fully ready: at least one replica exists
 // and every replica is ready. A component scaled to zero, and one still rolling
 // out, are therefore not available.
+// deploymentReplicaStatus returns the replica counts reported for a Deployment.
+// Readiness is suppressed until the rollout is complete, using the same checks
+// as `kubectl rollout status`: the controller observed the latest spec, every
+// desired replica is on the current pod template, no outdated replica is left,
+// and every desired replica is ready. status.readyReplicas alone is not enough,
+// because it also counts ready pods from the previous ReplicaSet.
+func deploymentReplicaStatus(d *appsv1.Deployment) (replicas, readyReplicas int32) {
+	desired := int32(1)
+	if d.Spec.Replicas != nil {
+		desired = *d.Spec.Replicas
+	}
+	rolledOut := d.Status.ObservedGeneration >= d.Generation &&
+		d.Status.UpdatedReplicas >= desired &&
+		d.Status.Replicas <= d.Status.UpdatedReplicas &&
+		d.Status.ReadyReplicas >= desired
+	return desired, reportedReadyReplicas(d.Status.ReadyReplicas, desired, rolledOut)
+}
+
+// statefulSetReplicaStatus is deploymentReplicaStatus for StatefulSets, which
+// report revision names instead of a per-replica template hash.
+func statefulSetReplicaStatus(ss *appsv1.StatefulSet) (replicas, readyReplicas int32) {
+	desired := int32(1)
+	if ss.Spec.Replicas != nil {
+		desired = *ss.Spec.Replicas
+	}
+	rolledOut := ss.Status.ObservedGeneration >= ss.Generation &&
+		ss.Status.UpdatedReplicas >= desired &&
+		ss.Status.Replicas <= desired &&
+		ss.Status.ReadyReplicas >= desired &&
+		ss.Status.CurrentRevision == ss.Status.UpdateRevision
+	return desired, reportedReadyReplicas(ss.Status.ReadyReplicas, desired, rolledOut)
+}
+
+// reportedReadyReplicas hides readiness while a rollout is in progress and caps
+// the count at the desired replicas, so a scale-down does not report more ready
+// replicas than were asked for.
+func reportedReadyReplicas(ready, desired int32, rolledOut bool) int32 {
+	switch {
+	case !rolledOut:
+		return 0
+	case ready > desired:
+		return desired
+	default:
+		return ready
+	}
+}
+
 func setComponentAvailableCondition(gw *batchv1alpha1.LLMBatchGateway, cond componentCondition, status *batchv1alpha1.ComponentReplicaStatus) bool {
 	var replicas, readyReplicas int32
 	if status != nil {

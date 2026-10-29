@@ -696,17 +696,19 @@ type ComponentStatus struct {
 }
 
 // ComponentReplicaStatus reports how far a workload's rollout has progressed.
+// The pair is meant to be read as ready out of desired: a component is
+// available only when every desired replica is ready.
 type ComponentReplicaStatus struct {
-	// Replicas is the number of pods running the current pod template. It is 0
-	// until the workload controller has created pods for the latest spec, and it
-	// excludes pods still running an older template during a rollout.
+	// Replicas is the number of replicas requested in the workload spec.
 	Replicas int32 `json:"replicas"`
 
 	// ReadyReplicas is the number of replicas that have passed their readiness
-	// checks. It is reported as 0 while the workload is still rolling out: the
-	// controller has not observed the latest spec, or the pod template revision
-	// is still changing. A non-zero value therefore means the rollout finished and
-	// that many replicas are ready.
+	// checks, capped at Replicas. It is reported as 0 while the workload is still
+	// rolling out, following the same conditions as kubectl rollout status: the
+	// controller has not observed the latest spec, not every desired replica runs
+	// the current pod template, an outdated replica is still present, or the pod
+	// template revision is still changing. A non-zero value therefore means the
+	// rollout finished.
 	ReadyReplicas int32 `json:"readyReplicas"`
 }
 

@@ -2198,6 +2198,209 @@ func TestConditionHelpers(t *testing.T) {
 	}
 }
 
+// TestDeploymentReplicaStatus pins the rollout checks against the cases where a
+// bare readyReplicas comparison wrongly reports a component available.
+func TestDeploymentReplicaStatus(t *testing.T) {
+	replicas := func(n int32) *int32 { return &n }
+
+	tests := []struct {
+		name        string
+		deploy      *appsv1.Deployment
+		wantDesired int32
+		wantReady   int32
+	}{
+		{
+			name: "settled",
+			deploy: &appsv1.Deployment{
+				ObjectMeta: metav1.ObjectMeta{Generation: 2},
+				Spec:       appsv1.DeploymentSpec{Replicas: replicas(3)},
+				Status: appsv1.DeploymentStatus{
+					ObservedGeneration: 2, UpdatedReplicas: 3, Replicas: 3, ReadyReplicas: 3,
+				},
+			},
+			wantDesired: 3, wantReady: 3,
+		},
+		{
+			name: "controller has not observed the spec yet",
+			deploy: &appsv1.Deployment{
+				ObjectMeta: metav1.ObjectMeta{Generation: 3},
+				Spec:       appsv1.DeploymentSpec{Replicas: replicas(1)},
+				Status: appsv1.DeploymentStatus{
+					ObservedGeneration: 2, UpdatedReplicas: 1, Replicas: 1, ReadyReplicas: 1,
+				},
+			},
+			wantDesired: 1, wantReady: 0,
+		},
+		{
+			// New pod crash-looping, old ready pod still serving: readyReplicas
+			// counts the old ReplicaSet, updatedReplicas does not.
+			name: "stuck rollout keeps the old pod ready",
+			deploy: &appsv1.Deployment{
+				ObjectMeta: metav1.ObjectMeta{Generation: 2},
+				Spec:       appsv1.DeploymentSpec{Replicas: replicas(1)},
+				Status: appsv1.DeploymentStatus{
+					ObservedGeneration: 2, UpdatedReplicas: 1, Replicas: 2, ReadyReplicas: 1,
+				},
+			},
+			wantDesired: 1, wantReady: 0,
+		},
+		{
+			name: "partial rollout across replicas",
+			deploy: &appsv1.Deployment{
+				ObjectMeta: metav1.ObjectMeta{Generation: 2},
+				Spec:       appsv1.DeploymentSpec{Replicas: replicas(3)},
+				Status: appsv1.DeploymentStatus{
+					ObservedGeneration: 2, UpdatedReplicas: 1, Replicas: 3, ReadyReplicas: 3,
+				},
+			},
+			wantDesired: 3, wantReady: 0,
+		},
+		{
+			// Scale up where the extra pods are never created.
+			name: "scale up with pods never created",
+			deploy: &appsv1.Deployment{
+				ObjectMeta: metav1.ObjectMeta{Generation: 2},
+				Spec:       appsv1.DeploymentSpec{Replicas: replicas(3)},
+				Status: appsv1.DeploymentStatus{
+					ObservedGeneration: 2, UpdatedReplicas: 1, Replicas: 1, ReadyReplicas: 1,
+				},
+			},
+			wantDesired: 3, wantReady: 0,
+		},
+		{
+			name: "scale down with surplus ready pods",
+			deploy: &appsv1.Deployment{
+				ObjectMeta: metav1.ObjectMeta{Generation: 2},
+				Spec:       appsv1.DeploymentSpec{Replicas: replicas(1)},
+				Status: appsv1.DeploymentStatus{
+					ObservedGeneration: 2, UpdatedReplicas: 2, Replicas: 3, ReadyReplicas: 3,
+				},
+			},
+			wantDesired: 1, wantReady: 0,
+		},
+		{
+			name: "settled after scale down caps ready at desired",
+			deploy: &appsv1.Deployment{
+				ObjectMeta: metav1.ObjectMeta{Generation: 2},
+				Spec:       appsv1.DeploymentSpec{Replicas: replicas(1)},
+				Status: appsv1.DeploymentStatus{
+					ObservedGeneration: 2, UpdatedReplicas: 1, Replicas: 1, ReadyReplicas: 1,
+				},
+			},
+			wantDesired: 1, wantReady: 1,
+		},
+		{
+			name: "suspended",
+			deploy: &appsv1.Deployment{
+				ObjectMeta: metav1.ObjectMeta{Generation: 2},
+				Spec:       appsv1.DeploymentSpec{Replicas: replicas(0)},
+				Status: appsv1.DeploymentStatus{
+					ObservedGeneration: 2, UpdatedReplicas: 0, Replicas: 0, ReadyReplicas: 0,
+				},
+			},
+			wantDesired: 0, wantReady: 0,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			desired, ready := deploymentReplicaStatus(tt.deploy)
+			if desired != tt.wantDesired {
+				t.Errorf("desired = %d, want %d", desired, tt.wantDesired)
+			}
+			if ready != tt.wantReady {
+				t.Errorf("ready = %d, want %d", ready, tt.wantReady)
+			}
+		})
+	}
+}
+
+// TestStatefulSetReplicaStatus covers the StatefulSet equivalent, adding the
+// revision check that Deployments express through per-pod template hashes.
+func TestStatefulSetReplicaStatus(t *testing.T) {
+	replicas := func(n int32) *int32 { return &n }
+
+	tests := []struct {
+		name        string
+		sts         *appsv1.StatefulSet
+		wantDesired int32
+		wantReady   int32
+	}{
+		{
+			name: "settled",
+			sts: &appsv1.StatefulSet{
+				ObjectMeta: metav1.ObjectMeta{Generation: 2},
+				Spec:       appsv1.StatefulSetSpec{Replicas: replicas(2)},
+				Status: appsv1.StatefulSetStatus{
+					ObservedGeneration: 2, UpdatedReplicas: 2, Replicas: 2, ReadyReplicas: 2,
+					CurrentRevision: "rev-2", UpdateRevision: "rev-2",
+				},
+			},
+			wantDesired: 2, wantReady: 2,
+		},
+		{
+			name: "revision still changing",
+			sts: &appsv1.StatefulSet{
+				ObjectMeta: metav1.ObjectMeta{Generation: 2},
+				Spec:       appsv1.StatefulSetSpec{Replicas: replicas(1)},
+				Status: appsv1.StatefulSetStatus{
+					ObservedGeneration: 2, UpdatedReplicas: 1, Replicas: 1, ReadyReplicas: 1,
+					CurrentRevision: "rev-1", UpdateRevision: "rev-2",
+				},
+			},
+			wantDesired: 1, wantReady: 0,
+		},
+		{
+			name: "scale up with pods never created",
+			sts: &appsv1.StatefulSet{
+				ObjectMeta: metav1.ObjectMeta{Generation: 2},
+				Spec:       appsv1.StatefulSetSpec{Replicas: replicas(3)},
+				Status: appsv1.StatefulSetStatus{
+					ObservedGeneration: 2, UpdatedReplicas: 1, Replicas: 1, ReadyReplicas: 1,
+					CurrentRevision: "rev-1", UpdateRevision: "rev-1",
+				},
+			},
+			wantDesired: 3, wantReady: 0,
+		},
+		{
+			name: "scale down with surplus pods",
+			sts: &appsv1.StatefulSet{
+				ObjectMeta: metav1.ObjectMeta{Generation: 2},
+				Spec:       appsv1.StatefulSetSpec{Replicas: replicas(1)},
+				Status: appsv1.StatefulSetStatus{
+					ObservedGeneration: 2, UpdatedReplicas: 3, Replicas: 3, ReadyReplicas: 3,
+					CurrentRevision: "rev-1", UpdateRevision: "rev-1",
+				},
+			},
+			wantDesired: 1, wantReady: 0,
+		},
+		{
+			name: "suspended",
+			sts: &appsv1.StatefulSet{
+				ObjectMeta: metav1.ObjectMeta{Generation: 2},
+				Spec:       appsv1.StatefulSetSpec{Replicas: replicas(0)},
+				Status: appsv1.StatefulSetStatus{
+					ObservedGeneration: 2,
+					CurrentRevision:    "rev-1", UpdateRevision: "rev-1",
+				},
+			},
+			wantDesired: 0, wantReady: 0,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			desired, ready := statefulSetReplicaStatus(tt.sts)
+			if desired != tt.wantDesired {
+				t.Errorf("desired = %d, want %d", desired, tt.wantDesired)
+			}
+			if ready != tt.wantReady {
+				t.Errorf("ready = %d, want %d", ready, tt.wantReady)
+			}
+		})
+	}
+}
+
 func TestSetComponentAvailableCondition(t *testing.T) {
 	tests := []struct {
 		name        string
