@@ -685,12 +685,18 @@ type ComponentStatus struct {
 	AsyncProcessor *ComponentReplicaStatus `json:"asyncProcessor,omitempty"`
 }
 
-// ComponentReplicaStatus reports the desired and ready replica counts for a workload.
+// ComponentReplicaStatus reports how far a workload's rollout has progressed.
 type ComponentReplicaStatus struct {
-	// Replicas is the total number of non-terminated pods.
+	// Replicas is the number of pods running the current pod template. It is 0
+	// until the workload controller has created pods for the latest spec, and it
+	// excludes pods still running an older template during a rollout.
 	Replicas int32 `json:"replicas"`
 
-	// ReadyReplicas is the number of pods that have passed their readiness checks.
+	// ReadyReplicas is the number of replicas that have passed their readiness
+	// checks. It is reported as 0 while the workload is still rolling out: the
+	// controller has not observed the latest spec, or the pod template revision
+	// is still changing. A non-zero value therefore means the rollout finished and
+	// that many replicas are ready.
 	ReadyReplicas int32 `json:"readyReplicas"`
 }
 

@@ -416,9 +416,16 @@ func (r *LLMBatchGatewayReconciler) updateStatus(ctx context.Context, gw *batchv
 			continue
 		}
 
+		updatedReplicas := d.Status.UpdatedReplicas
+		readyReplicas := d.Status.ReadyReplicas
+
+		if d.Status.ObservedGeneration < d.Generation {
+			readyReplicas = 0
+		}
+
 		setComponentStatus(componentStatus, component, &batchv1alpha1.ComponentReplicaStatus{
-			Replicas:      d.Status.Replicas,
-			ReadyReplicas: d.Status.ReadyReplicas,
+			Replicas:      updatedReplicas,
+			ReadyReplicas: readyReplicas,
 		})
 	}
 
@@ -439,9 +446,17 @@ func (r *LLMBatchGatewayReconciler) updateStatus(ctx context.Context, gw *batchv
 			continue
 		}
 
+		updatedReplicas := ss.Status.UpdatedReplicas
+		readyReplicas := ss.Status.ReadyReplicas
+
+		if ss.Status.CurrentRevision != ss.Status.UpdateRevision ||
+			ss.Status.ObservedGeneration < ss.Generation {
+			readyReplicas = 0
+		}
+
 		setComponentStatus(componentStatus, component, &batchv1alpha1.ComponentReplicaStatus{
-			Replicas:      ss.Status.Replicas,
-			ReadyReplicas: ss.Status.ReadyReplicas,
+			Replicas:      updatedReplicas,
+			ReadyReplicas: readyReplicas,
 		})
 	}
 
